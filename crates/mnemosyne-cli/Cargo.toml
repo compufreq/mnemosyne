@@ -21,6 +21,7 @@ mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
 mnemosyne-index = { path = "../mnemosyne-index" }
+mnemosyne-llm = { path = "../mnemosyne-llm" }
 mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

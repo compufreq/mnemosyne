@@ -15,6 +15,7 @@ path = "src/main.rs"
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
+mnemosyne-llm = { path = "../mnemosyne-llm" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

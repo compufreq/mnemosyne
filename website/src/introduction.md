@@ -1,0 +1,3 @@
+# Mnemosyne
+
+{{#include ../../README.md}}
