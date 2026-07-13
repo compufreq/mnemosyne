@@ -5,6 +5,7 @@ members = [
     "crates/mnemosyne-vault",
     "crates/mnemosyne-store",
     "crates/mnemosyne-index",
+    "crates/mnemosyne-llm",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
     "crates/mnemosyne-embed-onnx",
@@ -16,12 +17,13 @@ default-members = [
     "crates/mnemosyne-vault",
     "crates/mnemosyne-store",
     "crates/mnemosyne-index",
+    "crates/mnemosyne-llm",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "BUSL-1.1"
 repository = "https://github.com/compufreq/mnemosyne"
