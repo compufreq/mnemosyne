@@ -1,0 +1,8 @@
+{
+  "name": "mnemosyne",
+  "displayName": "Mnemosyne",
+  "description": "Hardened local-first AI memory: encrypted vaults, verbatim recall, knowledge graph. Requires the `mnemosyne` binary on PATH.",
+  "version": "0.4.0",
+  "author": "compufreq",
+  "homepage": "https://github.com/compufreq/mnemosyne"
+}

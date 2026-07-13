@@ -1,0 +1,35 @@
+# Mnemosyne remote MCP server — systemd unit template.
+#
+# Install:
+#   sudo useradd --system --home /var/lib/mnemosyne --shell /usr/sbin/nologin mnemosyne
+#   sudo install -d -o mnemosyne -g mnemosyne -m 750 /var/lib/mnemosyne /etc/mnemosyne
+#   sudo cp deploy/server.env.example /etc/mnemosyne/server.env   # edit, then chmod 600
+#   sudo cp target/release/mnemosyne /usr/local/bin/
+#   sudo cp deploy/mnemosyne-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mnemosyne-server
+#
+# Binds 0.0.0.0:8765 and requires MNEMOSYNE_MCP_HTTP_TOKEN (set in the
+# EnvironmentFile). Front it with a TLS-terminating reverse proxy.
+
+[Unit]
+Description=Mnemosyne remote MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mnemosyne
+Group=mnemosyne
+EnvironmentFile=/etc/mnemosyne/server.env
+Environment=MNEMOSYNE_HOME=/var/lib/mnemosyne
+ExecStart=/usr/local/bin/mnemosyne serve-http --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mnemosyne
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

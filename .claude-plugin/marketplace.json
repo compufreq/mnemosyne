@@ -1,0 +1,11 @@
+{
+  "name": "mnemosyne",
+  "owner": { "name": "compufreq", "url": "https://github.com/compufreq" },
+  "plugins": [
+    {
+      "name": "mnemosyne",
+      "source": "./",
+      "description": "Hardened local-first AI memory: encrypted vaults, verbatim recall, knowledge graph."
+    }
+  ]
+}
