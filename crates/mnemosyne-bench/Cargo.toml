@@ -1,0 +1,22 @@
+[package]
+name = "mnemosyne-bench"
+description = "Retrieval benchmarks for Mnemosyne: LongMemEval-format harness + synthetic self-contained benchmark"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mnemosyne-bench"
+path = "src/main.rs"
+
+[dependencies]
+mnemosyne-core = { path = "../mnemosyne-core" }
+mnemosyne-vault = { path = "../mnemosyne-vault" }
+mnemosyne-store = { path = "../mnemosyne-store" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
