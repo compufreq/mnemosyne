@@ -1,0 +1,21 @@
+[package]
+name = "mnemosyne-store"
+description = "SQLite-backed palace storage with hybrid search over sealed or hmac-only vaults"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+mnemosyne-core = { path = "../mnemosyne-core" }
+mnemosyne-vault = { path = "../mnemosyne-vault" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
