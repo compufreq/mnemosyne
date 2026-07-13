@@ -111,25 +111,44 @@ mnemosyne init                       # master key + 'default' sealed vault
 mnemosyne vault create work          # new isolated vault (own keys, own DB)
 mnemosyne vault list | status <name>
 mnemosyne remember <text> [--vault --wing --room]
-mnemosyne mine <dir> [--vault --wing]    # chunk + file text/markdown files
+mnemosyne mine <dir> [--mode files|convos]  # documents, or Claude Code/Codex JSONL sessions
+mnemosyne sweep <dir>                # one verbatim drawer per transcript message (idempotent)
 mnemosyne search <query> [--vault --wing --room -n N]
-mnemosyne wake-up [--vault --wing]       # L0 identity + L1 essential story
-mnemosyne verify [--vault]               # HMAC every record + replay audit chain
-mnemosyne export [--vault]               # decrypted JSONL to stdout
-mnemosyne serve-mcp [--vault]            # MCP tools: save/search/wake_up/verify
+mnemosyne wake-up [--vault --wing]   # L0 identity + L1 essential story
+mnemosyne drawer get|list|update|delete|delete-by-source|check-dup
+mnemosyne kg add|query|rel|invalidate|supersede|timeline|stats
+mnemosyne diary write|read|agents    # per-agent diaries in their own wings
+mnemosyne tunnel create|list|follow|delete|traverse   # cross-wing links
+mnemosyne hallways <wing>            # within-wing entity co-occurrence
+mnemosyne stats | taxonomy           # palace shape
+mnemosyne dedup [--apply]            # exact-duplicate detection (keyed fingerprints)
+mnemosyne backup create|list|restore # verified snapshots, keeps last 10
+mnemosyne repair                     # backfill + vacuum + re-verify
+mnemosyne verify [--vault]           # HMAC every record + replay audit chain
+mnemosyne export [--vault]           # decrypted JSONL to stdout
+mnemosyne hooks claude-code          # auto-save hook settings snippet
+mnemosyne serve-mcp [--vault]        # MCP stdio server (30 tools)
 ```
 
 Palace location: `$MNEMOSYNE_HOME` (default `~/.mnemosyne`; `/data` in Docker).
 Passphrase mode: set `MNEMOSYNE_PASSPHRASE` before `init` and every command.
 
-## MCP tools
+## MCP tools (30)
 
-| Tool | Purpose |
+| Category | Tools |
 |---|---|
-| `mnemosyne_save` | File one verbatim memory (encrypted + tagged at rest) |
-| `mnemosyne_search` | Hybrid search over the vault |
-| `mnemosyne_wake_up` | Recent essential memories for session start |
-| `mnemosyne_verify` | HMAC + audit-chain integrity check |
+| Palace core | `save`, `search`, `wake_up`, `verify`, `status` |
+| Drawers | `get_drawer`, `add_drawer`, `update_drawer`, `delete_drawer`, `list_drawers`, `delete_by_source`, `check_duplicate` |
+| Navigation | `list_wings`, `list_rooms`, `get_taxonomy`, `create_tunnel`, `list_tunnels`, `follow_tunnel`, `delete_tunnel`, `traverse`, `list_hallways` |
+| Knowledge graph | `kg_add`, `kg_query`, `kg_invalidate`, `kg_supersede`, `kg_timeline`, `kg_stats` |
+| Agent diaries | `diary_write`, `diary_read`, `list_agents` |
+| Maintenance | `dedup` |
+
+All tool names are prefixed `mnemosyne_`. The knowledge graph stores temporal
+facts with validity windows — `kg_query --as-of 2024-06-15` answers "what was
+true then", `kg_supersede` closes the old fact and opens the new one, and
+`kg_timeline` replays history. KG facts live in the vault too: objects are
+sealed in encrypted vaults, and every triple is HMAC-tagged and audit-chained.
 
 ## Testing (all in Docker)
 
@@ -162,12 +181,15 @@ use the same deterministic-recipe idea (idempotent re-mining).
 ## Relationship to MemPalace
 
 Mnemosyne is a fork of [MemPalace](https://github.com/MemPalace/mempalace)
-(MIT). The Python implementation is retained in-tree (`mempalace/`,
-`Dockerfile.python`, `docker-compose.python.yml`) as the reference during the
-conversion; the Rust workspace is the primary implementation going forward.
-Not yet ported: the Chroma/Qdrant/Milvus/pgvector server backends, the
-conversation/format miners, knowledge graph, and the model-based embedder —
-see [ROADMAP](ROADMAP.md).
+(MIT), fully converted to Rust — the Python implementation has been removed.
+Ported: the palace model and miners (files + conversation transcripts +
+sweep), wake-up layers, knowledge graph, tunnels/hallways navigation, agent
+diaries, drawer management, dedup/stats/backups/repair, hooks output, and the
+MCP tool surface. Intentionally not carried over: the Chroma/Qdrant/Milvus/
+pgvector server backends (the bundled SQLite store replaces `sqlite_exact`;
+server backends would bypass the vault layer unless sealed client-side — see
+[ROADMAP](ROADMAP.md)) and the downloaded-model embedder (replaced by the
+offline hashed n-gram embedder behind a pluggable `Embedder` trait).
 
 ## License
 
