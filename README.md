@@ -180,14 +180,14 @@ mnemosyne import <file.jsonl>        # migrate from mnemosyne or mempalace expor
 mnemosyne transcript render <f.jsonl># pretty-print an agent transcript
 mnemosyne daemon run [--watch --interval --once]  # background auto-save loop
 mnemosyne hooks claude-code          # auto-save hook settings snippet
-mnemosyne serve-mcp [--vault]        # MCP stdio server (30 tools)
+mnemosyne serve-mcp [--vault]        # MCP stdio server (32 tools)
 mnemosyne serve-http [--host --port --read-only]  # shared team server (bearer auth)
 ```
 
 Palace location: `$MNEMOSYNE_HOME` (default `~/.mnemosyne`; `/data` in Docker).
 Passphrase mode: set `MNEMOSYNE_PASSPHRASE` before `init` and every command.
 
-## MCP tools (30)
+## MCP tools (32)
 
 | Category | Tools |
 |---|---|

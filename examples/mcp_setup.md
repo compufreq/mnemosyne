@@ -22,4 +22,4 @@ claude mcp add mnemosyne -- docker run -i --rm -v mnemosyne-data:/data mnemosyne
 
 See [docs/remote-server.md](../docs/remote-server.md).
 
-30 tools are exposed; ask the client to list them, or see the README table.
+32 tools are exposed; ask the client to list them, or see the README table.
