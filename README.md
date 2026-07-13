@@ -4,7 +4,7 @@
 
 **Hardened, local-first AI memory: encrypted, integrity-verified memory vaults with verbatim recall.**
 
-[Documentation](https://compufreq.github.io/mnemosyne/) · [Getting started](https://compufreq.github.io/mnemosyne/getting-started.html) · [Security model](https://compufreq.github.io/mnemosyne/security.html)
+[Website](https://compufreq.github.io/mnemosyne/) · [Documentation](https://compufreq.github.io/mnemosyne/docs/) · [Security model](https://compufreq.github.io/mnemosyne/docs/security.html)
 
 </div>
 
