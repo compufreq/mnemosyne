@@ -1,0 +1,14 @@
+[package]
+name = "mnemosyne-embed-onnx"
+description = "ONNX sentence-embedding backend (MiniLM-class models) for Mnemosyne, via tract (pure Rust)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+mnemosyne-core = { path = "../mnemosyne-core" }
+thiserror = { workspace = true }
+tract-onnx = "0.21"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }

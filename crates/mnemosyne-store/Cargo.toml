@@ -10,6 +10,8 @@ authors.workspace = true
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
+mnemosyne-index = { path = "../mnemosyne-index" }
+base64 = "0.22"
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

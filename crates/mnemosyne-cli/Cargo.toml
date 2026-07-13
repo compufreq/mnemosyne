@@ -11,10 +11,17 @@ authors.workspace = true
 name = "mnemosyne"
 path = "src/main.rs"
 
+[features]
+# Enables the ONNX sentence-embedder (MNEMOSYNE_EMBEDDER=onnx).
+# Off by default to keep the standard build lean and fully offline.
+onnx = ["dep:mnemosyne-embed-onnx"]
+
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
+mnemosyne-index = { path = "../mnemosyne-index" }
+mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
