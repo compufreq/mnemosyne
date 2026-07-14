@@ -15,6 +15,9 @@ path = "src/main.rs"
 # Enables the ONNX sentence-embedder (MNEMOSYNE_EMBEDDER=onnx).
 # Off by default to keep the standard build lean and fully offline.
 onnx = ["dep:mnemosyne-embed-onnx"]
+# Enables observability: structured logs, Prometheus /metrics, OTLP export.
+# Off by default (zero extra deps, zero overhead) — see mnemosyne-obs.
+telemetry = ["mnemosyne-obs/telemetry"]
 
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
@@ -22,6 +25,7 @@ mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
 mnemosyne-index = { path = "../mnemosyne-index" }
 mnemosyne-llm = { path = "../mnemosyne-llm" }
+mnemosyne-obs = { path = "../mnemosyne-obs" }
 mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

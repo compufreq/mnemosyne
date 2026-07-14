@@ -1,0 +1,72 @@
+# Mnemosyne observability stack — mnemosyne + Prometheus + Grafana.
+#
+# Stands up a telemetry-enabled mnemosyne server, scrapes its /metrics
+# endpoint with Prometheus, and renders a pre-provisioned Grafana
+# dashboard. Everything is local and self-contained.
+#
+#   cd deploy/observability
+#   docker compose -f docker-compose.observability.yml up --build
+#   # Grafana:    http://localhost:3000   (dashboard: "Mnemosyne — Palace")
+#   # Prometheus: http://localhost:9090
+#
+# The mnemosyne image is built with `--features telemetry` (MNEMOSYNE_FEATURES
+# build arg) so /metrics is live; MNEMOSYNE_METRICS=1 turns the endpoint on.
+#
+# DEMO TOKEN: MNEMOSYNE_MCP_HTTP_TOKEN below and Prometheus' scrape
+# credential (prometheus.yml) share one fixed value for turnkey local use.
+# It is NOT a secret — change both for anything beyond localhost.
+
+services:
+  mnemosyne:
+    build:
+      context: ../..
+      args:
+        MNEMOSYNE_FEATURES: telemetry
+    restart: unless-stopped
+    command:
+      - serve-http
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8765"
+    environment:
+      # Metrics are opt-in and sit behind this bearer token.
+      MNEMOSYNE_MCP_HTTP_TOKEN: ${MNEMOSYNE_MCP_HTTP_TOKEN:-mnemosyne-observability-demo-token}
+      MNEMOSYNE_METRICS: "1"
+      MNEMOSYNE_LOG: "warn,mnemosyne=info"
+    volumes:
+      - mnemosyne-data:/data
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    depends_on:
+      - mnemosyne
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Anonymous read access for a frictionless local look; lock this down
+      # (or remove) for any shared deployment.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  mnemosyne-data:
+  prometheus-data:
+  grafana-data:

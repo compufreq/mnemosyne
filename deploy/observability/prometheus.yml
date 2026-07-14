@@ -1,0 +1,22 @@
+# Prometheus scrape config for the Mnemosyne observability stack.
+#
+# /metrics is opt-in and bearer-gated, so the scrape carries the same demo
+# token the mnemosyne service uses. Change both together for real use
+# (Prometheus supports `authorization.credentials_file` if you prefer to
+# keep the token out of this file).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: mnemosyne
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials: mnemosyne-observability-demo-token
+    static_configs:
+      - targets: ["mnemosyne:8765"]
+        labels:
+          service: mnemosyne
