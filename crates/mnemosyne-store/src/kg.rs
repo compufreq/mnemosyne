@@ -234,6 +234,7 @@ impl PalaceStore {
             )
             .map_err(|_| {
                 mnemosyne_obs::hmac_verify_failed("kg");
+                mnemosyne_obs::event_hmac_fail(self.vault.id(), "kg");
                 StoreError::Integrity(format!("kg/{}", row.id))
             })?;
         let object = self
