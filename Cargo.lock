@@ -1280,6 +1280,7 @@ dependencies = [
  "anyhow",
  "clap",
  "mnemosyne-core",
+ "mnemosyne-embed-onnx",
  "mnemosyne-llm",
  "mnemosyne-store",
  "mnemosyne-vault",
