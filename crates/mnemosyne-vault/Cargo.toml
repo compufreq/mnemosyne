@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
+mnemosyne-obs = { path = "../mnemosyne-obs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
