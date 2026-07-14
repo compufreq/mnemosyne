@@ -182,8 +182,16 @@ mnemosyne transcript render <f.jsonl># pretty-print an agent transcript
 mnemosyne daemon run [--watch --interval --once]  # background auto-save loop
 mnemosyne hooks claude-code          # auto-save hook settings snippet
 mnemosyne serve-mcp [--vault]        # MCP stdio server (32 tools)
-mnemosyne serve-http [--host --port --read-only]  # shared team server (bearer auth)
+mnemosyne serve-http [--host --port --read-only]  # MCP /mcp + multi-tenant REST /v1
+mnemosyne assert-header <vault>      # mint an X-Vault-Assertion (per-tenant auth)
 ```
+
+`serve-http` is both the shared team server (MCP over HTTP, bearer auth) and
+a multi-tenant memory engine: a versioned `/v1` REST surface with vault
+lifecycle, per-vault HMAC assertions (`MNEMOSYNE_ASSERTION_SECRET`),
+caller-supplied embeddings, dedup-refresh on save, and lossless
+export/import for migrating a tenant between instances. See
+[the remote-server guide](docs/remote-server.md).
 
 Palace location: `$MNEMOSYNE_HOME` (default `~/.mnemosyne`; `/data` in Docker).
 Passphrase mode: set `MNEMOSYNE_PASSPHRASE` before `init` and every command.
