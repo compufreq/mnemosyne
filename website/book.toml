@@ -7,3 +7,6 @@ src = "src"
 [output.html]
 git-repository-url = "https://github.com/compufreq/mnemosyne"
 default-theme = "ayu"
+preferred-dark-theme = "ayu"
+additional-css = ["assets/mnemosyne.css"]
+additional-js = ["assets/mnemosyne.js"]
