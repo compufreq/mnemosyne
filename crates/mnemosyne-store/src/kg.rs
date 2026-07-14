@@ -214,6 +214,7 @@ impl PalaceStore {
         )?;
         self.vault.commit_write(&tag)?;
         mnemosyne_obs::kg_write(mnemosyne_obs::KgKind::Triple);
+        mnemosyne_obs::event_kg_triple(self.vault.id());
         Ok(id)
     }
 
@@ -352,6 +353,7 @@ impl PalaceStore {
             )?;
             self.vault.commit_write(&tag)?;
             mnemosyne_obs::kg_write(mnemosyne_obs::KgKind::Supersede);
+            mnemosyne_obs::event_kg_triple(self.vault.id());
             count += 1;
         }
         Ok(count)
