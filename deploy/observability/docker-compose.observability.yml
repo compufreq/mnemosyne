@@ -32,13 +32,12 @@ services:
       args:
         MNEMOSYNE_FEATURES: telemetry
     restart: unless-stopped
-    command:
-      - serve-http
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8765"
+    # Create the palace + default vault on first run, then serve.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mnemosyne init 2>/dev/null || true; exec mnemosyne serve-http --host 0.0.0.0 --port 8765"]
     environment:
+      # Palace lives on the named volume.
+      MNEMOSYNE_HOME: /data
       MNEMOSYNE_MCP_HTTP_TOKEN: ${MNEMOSYNE_MCP_HTTP_TOKEN:-mnemosyne-observability-demo-token}
       MNEMOSYNE_METRICS: "1"
       MNEMOSYNE_LOG: "warn,mnemosyne=info"
