@@ -14,12 +14,15 @@ path = "src/main.rs"
 [features]
 # Model-based benchmarking: MNEMOSYNE_EMBEDDER=onnx + MNEMOSYNE_ONNX_MODEL/_TOKENIZER
 onnx = ["dep:mnemosyne-embed-onnx"]
+# Local HNSW ANN prefilter: MNEMOSYNE_RETRIEVAL=hnsw
+hnsw = ["mnemosyne-store/hnsw"]
 
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
+mnemosyne-index = { path = "../mnemosyne-index" }
 mnemosyne-llm = { path = "../mnemosyne-llm" }
 anyhow = { workspace = true }
 clap = { workspace = true }
