@@ -12,14 +12,17 @@ name = "mnemosyne-bench"
 path = "src/main.rs"
 
 [features]
-# Model-based benchmarking: MNEMOSYNE_EMBEDDER=onnx + MNEMOSYNE_ONNX_MODEL/_TOKENIZER
+# Model-based benchmarking (tract): MNEMOSYNE_EMBEDDER=onnx + MNEMOSYNE_ONNX_MODEL/_TOKENIZER
 onnx = ["dep:mnemosyne-embed-onnx"]
+# Same models via ONNX Runtime (faster; links C++). Takes precedence over onnx.
+ort = ["dep:mnemosyne-embed-ort"]
 # Local HNSW ANN prefilter: MNEMOSYNE_RETRIEVAL=hnsw
 hnsw = ["mnemosyne-store/hnsw"]
 
 [dependencies]
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
+mnemosyne-embed-ort = { path = "../mnemosyne-embed-ort", optional = true }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-store = { path = "../mnemosyne-store" }
 mnemosyne-index = { path = "../mnemosyne-index" }
