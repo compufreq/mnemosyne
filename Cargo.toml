@@ -10,9 +10,11 @@ members = [
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
     "crates/mnemosyne-embed-onnx",
+    "crates/mnemosyne-embed-ort",
 ]
-# The ONNX embedder pulls heavy ML deps; it is built explicitly
-# (see the `onnx-build` compose service), not by default.
+# The ONNX embedders pull heavy ML deps (and `ort` links a C++ runtime); they
+# are built explicitly (see the `onnx-build` / `ort-build` compose services),
+# not by default.
 default-members = [
     "crates/mnemosyne-core",
     "crates/mnemosyne-vault",
