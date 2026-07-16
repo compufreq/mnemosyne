@@ -92,6 +92,24 @@ else
   echo "ok    sealed vault has no FTS index"; PASS=$((PASS+1))
 fi
 
+echo "== PQ/IVF prefilter (MNEMOSYNE_RETRIEVAL=pq, hmac-only vaults) =="
+check "pq search hits"            0 "kubernetes"                     -- \
+  env MNEMOSYNE_RETRIEVAL=pq "$BIN" search "staging kubernetes cluster" --vault plain
+check "bad retrieval mode fails"  1 "unknown MNEMOSYNE_RETRIEVAL"    -- \
+  env MNEMOSYNE_RETRIEVAL=nope "$BIN" search "anything" --vault plain
+if grep -qF "drawer_pq" "$MNEMOSYNE_HOME/vaults/plain/palace.db" 2>/dev/null; then
+  echo "ok    hmac-only vault has PQ codes on disk"; PASS=$((PASS+1))
+else
+  echo "FAIL  hmac-only vault missing its PQ codes"; FAIL=$((FAIL+1))
+fi
+check "pq no-op on sealed vault"  0 ""                               -- \
+  env MNEMOSYNE_RETRIEVAL=pq "$BIN" search "rust migration" --vault work
+if grep -qF "drawer_pq" "$MNEMOSYNE_HOME/vaults/work/palace.db" 2>/dev/null; then
+  echo "FAIL  sealed vault grew a PQ index"; FAIL=$((FAIL+1))
+else
+  echo "ok    sealed vault has no PQ index"; PASS=$((PASS+1))
+fi
+
 echo "== Mining files =="
 MINE_DIR="$(mktemp -d)"
 printf '# Retro\n\nWhat went well: the release train.\n\nWhat to fix: flaky CI on arm64.\n' \
