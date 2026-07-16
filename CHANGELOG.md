@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.15.0 — IVF inverted lists & the PQ scan-path fixes
+
+IVF partitioning on top of the v0.14.0 PQ codes — and, more consequentially,
+the three structural scan-path costs that benchmarking it exposed and removed.
+Net effect (synthetic corpus, hmac-only, within-run comparisons): **flat PQ
+~45% faster at N=20–50k** (23.9 → 34.4 q/s at 20k, 10.1 → 14.8 at 50k) with
+IVF adding **+7–11% on top at exact recall parity** (99.6%/99.1% R@5), a share
+that grows with corpus size — the probed scan is the only query cost that
+scales with N.
+
+- **IVF inverted lists** (`pqidx.rs` + `CoarseQuantizer` in `pq.rs`):
+  `nlist ≈ √N` deterministic k-means centroids partition the corpus; a query
+  ADC-scans the `nprobe` nearest lists. Non-residual — codes are unchanged;
+  probes that return fewer than `k` rows widen to the flat scan, so IVF can
+  narrow the candidate set but never empty it. On by default above
+  `MNEMOSYNE_IVF_MIN` (8192, `off` restores flat), probe count via
+  `MNEMOSYNE_IVF_NPROBE` (default `nlist/4` — recall tracks the probed
+  *fraction*: 3% → 68.7%, 11% → 86.9%, ~25% → parity). Partitions persist in
+  `pq_meta`, self-heal, and retrain when the corpus doubles past their
+  training size. hmac-only vaults only, unchanged invariant.
+- **Scan-path fixes** (each exposed by a measured sweep, each re-measured):
+  codes physically clustered `WITHOUT ROWID, PRIMARY KEY (list, seq)` — a
+  probed list is one sequential range scan, not per-row B-tree fetches
+  (which had made a 23%-fraction probe *slower* than the flat scan);
+  coherence verification is **event-driven** (first search after open or
+  after a failed encode — never per query; the guard join was costing more
+  than the scan it guarded); the ADC scan reads `drawer_pq` alone
+  (`delete_drawer` purges its code row; the per-row `JOIN drawers` existed
+  only for delete-orphans, which hydration filters anyway). v0.14.0 tables
+  migrate in place.
+- **CLI + `/v1` wiring**: `MNEMOSYNE_RETRIEVAL=pq|hnsw` now works in the
+  `mnemosyne` binary (search / serve-mcp / daemon) and per-tenant in the
+  multi-tenant server — previously bench-only. `hnsw` requires the new cli
+  `hnsw` pass-through feature and errors clearly without it. +5 e2e checks
+  including the sealed-vault no-PQ-tables invariant on disk.
+- **Bench**: `synth --queries N` caps the query phase to an even sample so
+  large-N sweeps finish in minutes; recall is reported over the sampled
+  queries.
+- Docs: RETRIEVAL_SCALING / RESULTS "every lever" / the public retrieval
+  page updated with the full fix ladder and final tables.
+
 ## 0.14.0 — Retrieval performance & scaling
 
 The retrieval-performance track: every configurable lever measured end to end
