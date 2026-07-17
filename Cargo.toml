@@ -9,6 +9,7 @@ members = [
     "crates/mnemosyne-obs",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
+    "crates/mnemosyne-orchestrator",
     "crates/mnemosyne-embed-onnx",
     "crates/mnemosyne-embed-ort",
 ]
@@ -24,6 +25,7 @@ default-members = [
     "crates/mnemosyne-obs",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
+    "crates/mnemosyne-orchestrator",
 ]
 
 [workspace.package]
