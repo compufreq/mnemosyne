@@ -9,6 +9,7 @@ members = [
     "crates/mnemosyne-obs",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
+    "crates/mnemosyne-orchestrator",
     "crates/mnemosyne-embed-onnx",
     "crates/mnemosyne-embed-ort",
 ]
@@ -24,10 +25,11 @@ default-members = [
     "crates/mnemosyne-obs",
     "crates/mnemosyne-cli",
     "crates/mnemosyne-bench",
+    "crates/mnemosyne-orchestrator",
 ]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/compufreq/mnemosyne"
