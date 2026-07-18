@@ -216,6 +216,7 @@ Or build natively: `cargo build --release` → `target/release/mnemosyne`.
 mnemosyne init                       # master key + 'default' sealed vault
 mnemosyne vault create work          # new isolated vault (own keys, own DB)
 mnemosyne vault list | status <name>
+mnemosyne vault rotate <name>        # fresh derived keys; re-seals everything, crash-safe
 mnemosyne remember <text> [--vault --wing --room]
 mnemosyne mine <dir> [--mode files|convos]  # documents, or Claude Code/Codex JSONL sessions
 mnemosyne sweep <dir>                # one verbatim drawer per transcript message (idempotent)
