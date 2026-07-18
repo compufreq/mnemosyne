@@ -43,6 +43,7 @@ FROM debian:bookworm-slim AS runtime
 RUN useradd --create-home --uid 10001 mnemosyne \
     && mkdir -p /data && chown mnemosyne:mnemosyne /data
 COPY --from=builder /src/target/release/mnemosyne /usr/local/bin/mnemosyne
+COPY --from=builder /src/target/release/mnemosyne-orchestrator /usr/local/bin/mnemosyne-orchestrator
 USER mnemosyne
 ENV MNEMOSYNE_HOME=/data
 VOLUME ["/data"]
