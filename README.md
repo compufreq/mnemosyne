@@ -235,7 +235,10 @@ mnemosyne backup create|list|restore # verified snapshots, keeps last 10
 mnemosyne repair                     # backfill + vacuum + re-verify
 mnemosyne verify [--vault]           # HMAC every record + replay audit chain
 mnemosyne export [--vault]           # decrypted JSONL to stdout
+mnemosyne export --to <pub> --out f  # sealed bundle only that recipient can open
 mnemosyne import <file.jsonl>        # migrate from mnemosyne or mempalace exports
+mnemosyne import <bundle> --identity <key>  # open + import an encrypted bundle
+mnemosyne bundle keygen|recipient    # X25519 identities for sealed exports
 mnemosyne transcript render <f.jsonl># pretty-print an agent transcript
 mnemosyne daemon run [--watch --interval --once]  # background auto-save loop
 mnemosyne hooks claude-code          # auto-save hook settings snippet
