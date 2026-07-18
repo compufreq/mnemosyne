@@ -15,6 +15,12 @@ path = "src/main.rs"
 # Enables the ONNX sentence-embedder (MNEMOSYNE_EMBEDDER=onnx).
 # Off by default to keep the standard build lean and fully offline.
 onnx = ["dep:mnemosyne-embed-onnx"]
+# Enables the ONNX Runtime backend (MNEMOSYNE_EMBEDDER=ort,
+# MNEMOSYNE_RERANKER=ort|colbert-ort). Same user-supplied models and
+# MNEMOSYNE_ONNX_*/RERANK_*/COLBERT_* variables as the tract backend,
+# ~2.5× faster per forward — but links ONNX Runtime's C++ library, so it
+# is opt-in like `onnx` (see the ort-build compose service).
+ort = ["dep:mnemosyne-embed-ort"]
 # Enables the experimental in-memory HNSW ANN prefilter
 # (MNEMOSYNE_RETRIEVAL=hnsw). RAM-only, never persisted.
 hnsw = ["mnemosyne-store/hnsw"]
@@ -30,6 +36,7 @@ mnemosyne-index = { path = "../mnemosyne-index" }
 mnemosyne-llm = { path = "../mnemosyne-llm" }
 mnemosyne-obs = { path = "../mnemosyne-obs" }
 mnemosyne-embed-onnx = { path = "../mnemosyne-embed-onnx", optional = true }
+mnemosyne-embed-ort = { path = "../mnemosyne-embed-ort", optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
