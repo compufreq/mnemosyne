@@ -361,6 +361,8 @@ LLM (optional, for `refine`): `MNEMOSYNE_LLM_URL` · `MNEMOSYNE_LLM_MODEL`
 
 Telemetry builds: `MNEMOSYNE_LOG` · `MNEMOSYNE_LOG_FORMAT` (`json`) ·
 `MNEMOSYNE_OTLP_ENDPOINT` (unset ⇒ nothing leaves the process) ·
+`MNEMOSYNE_OTLP_HEADERS` (comma-separated `key=value` export headers,
+e.g. `authorization=Bearer <token>` for authenticated collectors) ·
 `MNEMOSYNE_SERVICE_NAME`.
 
 Orchestrator: `MNEMOSYNE_ORCH_DB` · `MNEMOSYNE_ORCH_KEY` (required) ·
