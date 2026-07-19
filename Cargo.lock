@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-bench"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-cli"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-core"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "hex",
  "serde",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-embed-onnx"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "mnemosyne-core",
  "rayon",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-embed-ort"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "mnemosyne-core",
  "ort",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-index"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "postgres",
  "serde",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-llm"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-obs"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-orchestrator"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-store"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -1667,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "mnemosyne-vault"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",

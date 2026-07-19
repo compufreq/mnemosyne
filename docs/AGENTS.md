@@ -58,8 +58,10 @@ HKDF-derived keys). When you build on it:
 All scenarios start the same way:
 
 ```bash
-git clone https://github.com/compufreq/mnemosyne && cd mnemosyne
-docker build -t mnemosyne .        # or: cargo build --release
+docker pull ghcr.io/compufreq/mnemosyne:latest   # published image
+# or: prebuilt binaries on every GitHub release (linux/macos/windows, sha256)
+# or: git clone https://github.com/compufreq/mnemosyne && docker build -t mnemosyne .
+# or: cargo build --release
 mnemosyne init                     # palace at ~/.mnemosyne (override: MNEMOSYNE_HOME)
 ```
 

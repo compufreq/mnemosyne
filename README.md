@@ -193,6 +193,9 @@ the plaintext index. Full numbers: [benchmarks/RESULTS.md](https://github.com/co
 Everything persists under `/data`, so mount a volume there:
 
 ```bash
+docker pull ghcr.io/compufreq/mnemosyne:latest   # published image
+docker tag ghcr.io/compufreq/mnemosyne:latest mnemosyne
+# or build it yourself:
 docker build -t mnemosyne .
 
 docker run --rm -v mnemosyne-data:/data mnemosyne init
@@ -216,6 +219,10 @@ Wire it into an MCP client (e.g. Claude Code):
 }
 ```
 
+No Docker? **Prebuilt binaries** for Linux (x86_64), macOS (Intel +
+Apple Silicon), and Windows are attached to every
+[release](https://github.com/compufreq/mnemosyne/releases/latest)
+(`mnemosyne` + `mnemosyne-orchestrator`, SHA-256 checksums included).
 Or build natively: `cargo build --release` → `target/release/mnemosyne`.
 
 ## CLI
