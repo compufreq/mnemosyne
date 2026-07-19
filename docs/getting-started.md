@@ -11,11 +11,14 @@
 Docker (recommended — nothing touches the host):
 
 ```bash
-docker build -t mnemosyne .
-alias mnemosyne='docker run --rm -v mnemosyne-data:/data mnemosyne'
+docker pull ghcr.io/compufreq/mnemosyne:latest    # or: docker build -t mnemosyne .
+alias mnemosyne='docker run --rm -v mnemosyne-data:/data ghcr.io/compufreq/mnemosyne:latest'
 ```
 
-Or native: `cargo build --release` → `target/release/mnemosyne`.
+Prebuilt binaries (Linux x86_64, macOS Intel/Apple Silicon, Windows) are
+attached to every [release](https://github.com/compufreq/mnemosyne/releases/latest),
+with SHA-256 checksums. Or native: `cargo build --release` →
+`target/release/mnemosyne`.
 
 ## First palace
 
