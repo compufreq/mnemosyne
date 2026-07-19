@@ -15,7 +15,7 @@ docker pull ghcr.io/compufreq/mnemosyne:latest    # or: docker build -t mnemosyn
 alias mnemosyne='docker run --rm -v mnemosyne-data:/data ghcr.io/compufreq/mnemosyne:latest'
 ```
 
-Prebuilt binaries (Linux x86_64, macOS Intel/Apple Silicon, Windows) are
+Prebuilt binaries (Linux x86_64/arm64, macOS Intel/Apple Silicon, Windows) are
 attached to every [release](https://github.com/compufreq/mnemosyne/releases/latest),
 with SHA-256 checksums. Or native: `cargo build --release` →
 `target/release/mnemosyne`.
