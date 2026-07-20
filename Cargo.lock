@@ -1518,6 +1518,7 @@ dependencies = [
  "mnemosyne-llm",
  "mnemosyne-store",
  "mnemosyne-vault",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
