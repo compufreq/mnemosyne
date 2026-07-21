@@ -372,6 +372,8 @@ Models: `MNEMOSYNE_EMBEDDER` (`hash`|`onnx`|`ort`) ·
 Retrieval: `MNEMOSYNE_RETRIEVAL` (`pq`|`fde`|`hnsw`) · `MNEMOSYNE_FUSION`
 (`bm25` default |`rrf`|`legacy`) · `MNEMOSYNE_FTS_PREFILTER_MIN` (2048) ·
 `MNEMOSYNE_IVF_MIN` (8192) · `MNEMOSYNE_IVF_NPROBE` ·
+`MNEMOSYNE_PQ_PAGE_MIN` (off by default — sealed page tier: one AEAD
+page per IVF list, lazy per-probe decrypt) ·
 `MNEMOSYNE_TOK_PQ_MIN` (256) · `MNEMOSYNE_FDE_PQ_MIN` (256) ·
 `MNEMOSYNE_FDE_IVF_MIN` (off by default — opt-in inverted tier) ·
 `MNEMOSYNE_FDE_NPROBE` (max(8, nlist/4)) ·
