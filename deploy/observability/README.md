@@ -22,7 +22,7 @@ mnemosyne (telemetry) ──/metrics──▶ Prometheus ──rules──▶ Al
 
 | Service | URL | What |
 |---|---|---|
-| **Grafana** | http://localhost:3000 | Dashboard **“Mnemosyne — Palace”** (metrics + logs + traces + active alerts). Anonymous viewer is on; admin is `admin`/`admin` unless you set `GRAFANA_ADMIN_PASSWORD`. Embedding is enabled (`GF_SECURITY_ALLOW_EMBEDDING`) so the engine’s vault admin console (`GET /ui` → GRAFANA tab) can iframe the dashboard directly. |
+| **Grafana** | http://localhost:3000 | Dashboard **“Mnemosyne — Palace”** (metrics + logs + traces + active alerts). Anonymous viewer is on; admin is `admin`/`admin` unless you set `GRAFANA_ADMIN_PASSWORD`. Embedding is enabled (`GF_SECURITY_ALLOW_EMBEDDING`) so the engine’s vault admin console (`GET /ui` → GRAFANA tab) can iframe the dashboard directly, and the anonymous viewer may open Explore (`GF_USERS_VIEWERS_CAN_EDIT`) so trace/log drill-downs from the panels work without logging in. |
 | **Prometheus** | http://localhost:9090 | Metrics + the **Alerts** tab (rule state). |
 | **Alertmanager** | http://localhost:9093 | Routed/firing alerts. |
 | **Loki** | http://localhost:3100 | Log store (query via Grafana). |
