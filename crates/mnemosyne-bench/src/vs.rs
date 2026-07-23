@@ -41,6 +41,15 @@ pub trait MemorySystem {
     /// Ranked, deduplicated session ids for a question (best first).
     /// May return more than `k`; the scorer truncates.
     fn search_sessions(&mut self, question: &str, k: usize) -> Result<Vec<String>>;
+    /// Barrier between ingest and questions: return only once everything
+    /// added is actually searchable. Systems with asynchronous ingest
+    /// pipelines drain their queue here — the wait is charged to ingest
+    /// time, which is what "ingest" means for every system (mem0's
+    /// inline extraction pays it inside `add`; a no-op default covers
+    /// synchronous stores).
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Scoreboard returned by [`vs_eval`] — the caller prints the RAW lines.
@@ -102,6 +111,7 @@ pub fn vs_eval(
             }
             n += 1;
         }
+        system.flush()?;
         score.ingest_secs += ingest_started.elapsed().as_secs_f32();
 
         let qa_pairs = sample
@@ -252,6 +262,16 @@ pub fn sessions_from_results(v: &Value) -> Vec<String> {
                         .and_then(|m| m.get("session"))
                         .and_then(Value::as_str)
                 });
+            // Supermemory's /v4/search nests source-document metadata
+            // under `documents[]` when the hit itself carries none.
+            let session = session.or_else(|| {
+                item.get("documents")
+                    .and_then(Value::as_array)
+                    .and_then(|d| d.first())
+                    .and_then(|d| d.get("metadata"))
+                    .and_then(|m| m.get("session"))
+                    .and_then(Value::as_str)
+            });
             if let Some(s) = session {
                 if !out.iter().any(|x| x == s) {
                     out.push(s.to_string());
@@ -534,12 +554,18 @@ impl MemorySystem for Mem0 {
 
 // -- Supermemory (self-hosted) ----------------------------------------------
 
-/// Supermemory's REST surface: `POST /v3/memories` with `content` +
-/// `containerTag` + `metadata`, `POST /v3/search` with `q` +
-/// `containerTag`.
+/// Supermemory's self-host REST surface (server v0.0.5, the latest
+/// release with a working ingest engine — v0.0.6 ships missing its
+/// bundled `@rivetkit/rivetkit-wasm` workflow module and every document
+/// stays `queued` forever): `POST /v3/documents` with `content` +
+/// `containerTag` + `metadata`, `POST /v4/search` with `q` +
+/// `containerTag` + `searchMode`. Ingest is asynchronous (`queued` →
+/// `indexing` → `done`), so `flush` polls every added document id until
+/// the corpus is searchable — that wait is ingest time by definition.
 pub struct Supermemory {
     cfg: HttpConfig,
     container: String,
+    pending: Vec<String>,
 }
 
 impl Supermemory {
@@ -547,12 +573,29 @@ impl Supermemory {
         Self {
             cfg: HttpConfig::resolve(
                 url_flag,
-                "http://127.0.0.1:8080",
-                "/v3/memories",
-                "/v3/search",
+                "http://127.0.0.1:6767",
+                "/v3/documents",
+                "/v4/search",
             ),
             container: String::new(),
+            pending: Vec::new(),
         }
+    }
+
+    fn doc_status(&self, id: &str) -> Result<String> {
+        let url = format!("{}/v3/documents/{}", self.cfg.base, id);
+        let mut req = ureq::get(&url).timeout(std::time::Duration::from_secs(30));
+        if let Some(b) = &self.cfg.bearer {
+            req = req.set("Authorization", &format!("Bearer {b}"));
+        }
+        let v: Value = req
+            .call()
+            .map_err(|e| anyhow::anyhow!("{url}: {e}"))?
+            .into_json()?;
+        Ok(v.get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string())
     }
 }
 
@@ -563,6 +606,7 @@ impl MemorySystem for Supermemory {
 
     fn begin_conversation(&mut self, convo: usize) -> Result<()> {
         self.container = format!("vs-convo-{convo}");
+        self.pending.clear();
         Ok(())
     }
 
@@ -572,7 +616,57 @@ impl MemorySystem for Supermemory {
             "containerTag": self.container,
             "metadata": { "session": session },
         });
-        post_json(&self.cfg, &self.cfg.add_path.clone(), &body)?;
+        let resp = post_json(&self.cfg, &self.cfg.add_path.clone(), &body)?;
+        if let Some(id) = resp.get("id").and_then(Value::as_str) {
+            self.pending.push(id.to_string());
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        // Drain the async ingest queue: poll each added document until
+        // `done` or `failed`. The deadline is a dead-server safety net,
+        // not a pace expectation — with an LLM in their dreaming
+        // pipeline a conversation drains at LLM speed (measured ~1
+        // min/doc on this host), so the default is 4 h per conversation
+        // (`MNEMOSYNE_VS_FLUSH_TIMEOUT_SECS` overrides).
+        let cap = std::env::var("MNEMOSYNE_VS_FLUSH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(14_400u64);
+        let deadline = Instant::now() + std::time::Duration::from_secs(cap);
+        let mut waiting: Vec<String> = std::mem::take(&mut self.pending);
+        while !waiting.is_empty() {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "supermemory ingest queue not drained after {cap} s ({} docs pending)",
+                waiting.len()
+            );
+            let mut still = Vec::new();
+            for id in waiting {
+                // A transient poll error must not kill a multi-hour run —
+                // keep the id and try again next round (the deadline
+                // still bounds the loop).
+                match self.doc_status(&id).as_deref() {
+                    Ok("done") => {}
+                    Ok("failed") => {
+                        // Their pipeline dropped the content; record it
+                        // and move on — the loss shows up as recall,
+                        // which is the honest place for it.
+                        eprintln!("  [supermemory] document {id} failed server-side; continuing");
+                    }
+                    Ok(_) => still.push(id),
+                    Err(e) => {
+                        eprintln!("  [supermemory] status poll retry after: {e}");
+                        still.push(id);
+                    }
+                }
+            }
+            waiting = still;
+            if !waiting.is_empty() {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        }
         Ok(())
     }
 
@@ -580,6 +674,7 @@ impl MemorySystem for Supermemory {
         let body = json!({
             "q": question,
             "containerTag": self.container,
+            "searchMode": "hybrid",
             "limit": k * 6,
         });
         let resp = post_json(&self.cfg, &self.cfg.search_path.clone(), &body)?;
@@ -676,6 +771,15 @@ mod tests {
             ]
         });
         assert_eq!(sessions_from_results(&nested), vec!["session_7"]);
+        // Supermemory /v4/search shape: hit-level metadata null, source
+        // document metadata under documents[].
+        let supermemory = serde_json::json!({
+            "results": [
+                { "chunk": "…", "metadata": null,
+                  "documents": [{ "id": "d1", "metadata": { "session": "session_3" } }] }
+            ]
+        });
+        assert_eq!(sessions_from_results(&supermemory), vec!["session_3"]);
         assert!(sessions_from_results(&serde_json::json!({})).is_empty());
     }
 }
