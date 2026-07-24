@@ -338,6 +338,7 @@ Engine (`serve-http`; bearer always; `X-Vault-Assertion` when
 | GET | `/v1/vaults/{id}/kg/entities` | paged entity summaries (`limit`, `offset`) |
 | GET | `/v1/vaults/{id}/kg/query` | facts about an entity (`entity`, `direction`, `as_of`) |
 | GET | `/v1/vaults/{id}/kg/timeline` | temporal fact timeline (opt `entity`) |
+| POST | `/v1/vaults/{id}/refine` | distil verbatim drawers into receipted KG facts + searchable fact-drawers (needs `MNEMOSYNE_LLM_URL`) |
 | POST | `/v1/vaults/{id}/verify` | HMAC + audit-chain verification report |
 | POST | `/v1/vaults/{id}/rotate` | rotate the vault onto fresh keys (sole-writer contract) |
 | GET | `/v1/vaults/{id}/export` | lossless NDJSON (vectors + token artifacts) |
@@ -386,7 +387,11 @@ Server: `MNEMOSYNE_MCP_HTTP_TOKEN` (bearer; mandatory non-loopback) ·
 `MNEMOSYNE_METRICS=1` (+ bearer) · `MNEMOSYNE_SAMPLE_INTERVAL_MS` (2000).
 
 LLM (optional, for `refine`): `MNEMOSYNE_LLM_URL` · `MNEMOSYNE_LLM_MODEL`
-(`llama3.2`) · `MNEMOSYNE_LLM_API` (`ollama`|`openai`).
+(`llama3.2`) · `MNEMOSYNE_LLM_API` (`ollama`|`openai`) ·
+`MNEMOSYNE_LLM_KEY` (bearer credential; **unset by default** — local
+runtimes take none, and an empty key sends no header at all. Set it only
+to reach a runtime behind an authenticating gateway, which unlike the
+local default means drawer text leaves the machine).
 
 Telemetry builds: `MNEMOSYNE_LOG` · `MNEMOSYNE_LOG_FORMAT` (`json`) ·
 `MNEMOSYNE_OTLP_ENDPOINT` (unset ⇒ nothing leaves the process) ·
