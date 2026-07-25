@@ -115,6 +115,43 @@ impl Drawer {
         self
     }
 
+    /// The times written into this drawer's text, as **this build** reads it.
+    ///
+    /// `meta.time_mentions` is the reading taken when the drawer was written
+    /// and sealed then. But a mention is derived from two things the drawer
+    /// stores permanently and immutably — its own text and its
+    /// `content_date` — so the resolution is recomputable at any moment, and
+    /// storing it only freezes it at whatever the writing binary understood.
+    ///
+    /// That freeze has teeth. A drawer written before "last month" was read
+    /// as a month still carries it as a single day. The words are fine; the
+    /// engine's reading of them is out of date, and re-reading is the only
+    /// way to benefit from a fix without rewriting the drawer.
+    ///
+    /// So read surfaces answer from here and the sealed copy stays as the
+    /// record of what was understood at the time. Deliberately the same call
+    /// [`with_content_date`](Self::with_content_date) makes, so the two
+    /// readings cannot drift apart by construction.
+    pub fn live_time_mentions(&self) -> Vec<crate::temporal::TimeMention> {
+        let anchor = self
+            .meta
+            .content_date
+            .as_deref()
+            .and_then(crate::temporal::parse_anchor);
+        crate::temporal::extract_time_mentions(&self.content, anchor)
+    }
+
+    /// Whether this build reads the drawer's times differently from the
+    /// reading sealed onto it.
+    ///
+    /// True means the drawer was written by an older understanding of the
+    /// language, not that anything is corrupt. Surfaced rather than resolved
+    /// silently: a caller comparing an export against a live answer deserves
+    /// to know which of the two it is looking at.
+    pub fn time_mentions_differ(&self) -> bool {
+        self.live_time_mentions() != self.meta.time_mentions
+    }
+
     /// Canonical bytes covered by the integrity HMAC: id, meta (canonical
     /// JSON), and content, separated by 0x1f so fields cannot bleed into
     /// each other.
@@ -140,6 +177,52 @@ mod tests {
         let a = Drawer::new("w", "r", "one".into(), Some("f.md".into()), 0, "test");
         let b = Drawer::new("w", "r", "two".into(), Some("f.md".into()), 0, "test");
         assert_eq!(a.id, b.id); // same slot => same id (idempotent re-mine)
+    }
+
+    // ---- the reading is live; the seal is the record --------------------
+
+    /// The point of reading live: a drawer sealed by an older build carries
+    /// an older understanding of its own words, and re-reading upgrades it
+    /// without rewriting a single byte. Here the sealed copy says "last
+    /// month" is one day — the pre-fix reading — while this build reads the
+    /// month it names.
+    #[test]
+    fn a_stale_sealed_reading_is_superseded_without_touching_the_drawer() {
+        let mut d = Drawer::new("w", "r", "I quit last month".into(), None, 0, "test")
+            .with_content_date(Some("2023-05-08".into()));
+        let sealed_before = d.meta.time_mentions.clone();
+        let content_before = d.content.clone();
+
+        // Simulate what an older binary sealed: the same span, resolved to a
+        // single day instead of the month it names.
+        d.meta.time_mentions[0].resolved = Some("2023-04-08".into());
+        d.meta.time_mentions[0].resolved_end = None;
+
+        assert!(d.time_mentions_differ(), "this build reads it differently");
+        let live = d.live_time_mentions();
+        assert_eq!(live[0].range(), Some(("2023-04-01", "2023-04-30")));
+        assert_eq!(live, sealed_before, "live matches what this build writes");
+        assert_eq!(d.content, content_before, "the words are never touched");
+    }
+
+    #[test]
+    fn an_up_to_date_drawer_reports_no_disagreement() {
+        let d = Drawer::new("w", "r", "we met yesterday".into(), None, 0, "test")
+            .with_content_date(Some("2023-05-08".into()));
+        assert!(!d.time_mentions_differ());
+        assert_eq!(d.live_time_mentions(), d.meta.time_mentions);
+    }
+
+    /// Live reading uses the drawer's own anchor, so a drawer with no
+    /// `content_date` resolves nothing — the same refusal the write path
+    /// makes, not a different one.
+    #[test]
+    fn live_reading_never_invents_an_anchor() {
+        let d = Drawer::new("w", "r", "we met yesterday".into(), None, 0, "test");
+        let live = d.live_time_mentions();
+        assert_eq!(live.len(), 1);
+        assert!(live[0].resolved.is_none(), "no anchor, no date");
+        assert!(!d.time_mentions_differ());
     }
 
     #[test]

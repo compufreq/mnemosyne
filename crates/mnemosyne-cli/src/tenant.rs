@@ -578,10 +578,21 @@ impl Tenancy {
                     // reader never has to re-derive what we computed exactly —
                     // including how long ago each one was, which is a
                     // different question from how old the drawer is.
+                    // Read live, not from the seal. The resolution is derived
+                    // from the drawer's own text and `content_date`, both
+                    // immutable, so re-reading costs a linear scan and makes
+                    // every improvement to the scanner retroactive across
+                    // every existing vault — no migration, no re-ingest.
                     "time_mentions": mentions_with_elapsed(
-                        &h.drawer.meta.time_mentions,
+                        &h.drawer.live_time_mentions(),
                         as_of.as_deref(),
                     ),
+                    // Present only when this build disagrees with the sealed
+                    // reading: the drawer was written by an older
+                    // understanding of the language. Not an error, and not
+                    // something to resolve silently.
+                    "mentions_restated": h.drawer.time_mentions_differ()
+                        .then_some(true),
                     "entities": h.drawer.meta.entities,
                     // Exact whole-day offsets from `as_of`, computed here
                     // rather than left to the reader. `elapsed` is the same
@@ -659,7 +670,21 @@ impl Tenancy {
         self.assert_or_401(id, req, now)?;
         let store = self.store_for(id)?;
         match store.get(drawer_id).map_err(store_err)? {
-            Some(d) => Ok((200, Body::Json(json!({ "drawer": d })))),
+            Some(d) => {
+                // Same rule as search: the sealed reading is the record, the
+                // live one is the answer. `drawer` stays byte-faithful to
+                // what is stored so an export and a fetch cannot disagree
+                // about the record itself.
+                let live = d.live_time_mentions();
+                let restated = live != d.meta.time_mentions;
+                let mut body = json!({ "drawer": d });
+                if restated {
+                    body["live_time_mentions"] =
+                        serde_json::to_value(&live).unwrap_or_else(|_| json!([]));
+                    body["mentions_restated"] = json!(true);
+                }
+                Ok((200, Body::Json(body)))
+            }
             None => Err(RestError::new(404, "no such drawer")),
         }
     }

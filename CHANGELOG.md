@@ -2,6 +2,23 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **The reading of a drawer's times is live; the seal is the record.**
+  `time_mentions` was computed once in `Drawer::new` and sealed, which froze
+  it at whatever the writing binary understood — a drawer written before
+  "last month" was read as a month still carried it as a single day, and the
+  only way to benefit from the fix was to rewrite every drawer. But a mention
+  is derived from two things the drawer stores permanently and immutably, its
+  own text and its `content_date`, so nothing about it needs to be frozen.
+  Read surfaces now answer from `Drawer::live_time_mentions()` — deliberately
+  the same call `with_content_date` makes, so the two readings cannot drift
+  apart — and every future improvement to the scanner reaches every existing
+  vault with no migration and no re-ingest. The sealed copy stays as the
+  record of what was understood at the time, and `mentions_restated: true`
+  appears wherever the two disagree, rather than one silently winning.
+  `GET /drawers/{id}` keeps `drawer` byte-faithful to storage and adds
+  `live_time_mentions` beside it, so a fetch and an export never disagree
+  about the record itself.
+
 Retrieval was never the weak link on conversational memory; what we stored
 was. A drawer recorded only when it was *filed*, so a year-old conversation
 ingested today carried today's date, and text like "I went yesterday" had no
