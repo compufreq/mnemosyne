@@ -16,8 +16,23 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   keep the safety floor; `match_key` = NFC **comparison keys only**, never
   applied to stored bytes — the promise is verbatim and NORMALIZE_VERSION is
   inside the drawer id, so folding on the write path would move every future
-  id; used by `fingerprint()` and every tokenizer so أ spelled two ways is
-  one word), grounding (`support.rs`: `Support`/`Span`/`Grounding` —
+  id; used by `fingerprint()` and both **store-side** tokenizers so أ spelled
+  two ways is one word — **`HashEmbedder::tokens()` does NOT apply it**, so
+  NFC and NFD spellings still land in different buckets on the cosine leg;
+  closing that changes stored vectors and needs an embedder-identity bump +
+  re-embed), script-aware segmentation (`script.rs`: `Script` +
+  `segment` — splitting on `!is_alphanumeric` finds no boundary in Han, Kana,
+  Hangul, Bopomofo, Arabic, Khmer, Thai, Lao or Myanmar, so a clause became
+  one token and a query for a word the drawer contains returned **nothing at
+  all** — `search` drops a hit with no lexical evidence and a neutral cosine,
+  so the observable was an empty result, not a bad ranking. Bigrams over
+  maximal same-**script** subruns, plus unigrams only where a character is a
+  word (`is_logographic` — Han only; unigrams in an alphabetic script make
+  `قطار` match `المستشفى` on a shared alef and retire the relevance gate).
+  Latin/digit subruns stay whole so a brand name inside CJK survives;
+  delimiting scripts — Latin, Cyrillic, Greek, Georgian, Tibetan — are
+  untouched, their defects being folding and morphology, which n-grams do not
+  address), grounding (`support.rs`: `Support`/`Span`/`Grounding` —
   spans as offsets, never copied text), temporal extraction (`temporal.rs`: in-text
   absolute + relative dates, resolved against the drawer's `content_date`,
   never guessed; a mention resolves to a **period** (`resolved` +

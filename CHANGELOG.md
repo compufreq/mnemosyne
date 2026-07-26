@@ -2,6 +2,54 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **A query for a word the drawer contains returned nothing.** Not a bad
+  ranking — an empty array that reads as an empty vault. Tokenizing splits on
+  `!char::is_alphanumeric()`, which finds a boundary only in scripts that
+  mark one. `我昨天去了北京参加会议` was **one token**, so a query for `北京`
+  matched no term; the hash embedder shared no feature either, giving cosine
+  exactly 0.0 and `semantic` exactly 0.500; and the relevance gate
+  (`lexical > 0.0 || semantic > 0.56`) then dropped the only drawer holding
+  the answer. Measured, on the real tokenizer: `北京` 0/1, `東京` 0/1,
+  `ភ្នំពេញ` 0/2, `한국어` vs `한국어는` 0/1, and `كتاب` 0/1 against a drawer
+  reading `قرأت الكتاب أمس`.
+  Khmer, Thai and Myanmar failed *differently* and worse. Their marks are
+  combining but not `Other_Alphabetic` (Khmer COENG U+17D2, Thai tone marks,
+  Myanmar ASAT), so they **do** split — into fragments positioned by whatever
+  word follows. The same Thai word matched when it ended the document and
+  missed when it began it. Han and Kana at least produced one stable token
+  both sides agreed on.
+  Boundaries now come from `script::segment`: character bigrams over maximal
+  same-**script** subruns, plus unigrams only where a character is a word.
+  That last qualifier is load-bearing in both directions — without Han
+  unigrams `好` stops being findable, and with unigrams everywhere `قطار`
+  matches `المستشفى` on a shared alef, which does not merely add noise but
+  retires the relevance gate for every query in the script. Latin and digit
+  subruns stay whole, so `Kubernetes` inside Chinese is still matchable
+  instead of being shredded into `wi, in, nd`. Delimiting scripts — Latin,
+  Cyrillic, Greek, Georgian, and Tibetan, which delimits on the tsheg — are
+  untouched and pinned byte-identical by test.
+- **Two characters is not a typo, it is a different city.** The one-edit
+  tolerance is gated on `q.len() >= 5`, and that is a *byte* count, so it
+  opened at three characters of Cyrillic and at **two** of anything CJK —
+  where one substitution turns 北京 into 東京, 中国 into 美国, 한국 into 중국.
+  Segmenting into bigrams would have made every CJK term a wildcard. Terms
+  written entirely in a non-delimiting script now allow insertion and
+  deletion only, which is a particle or clitic arriving, never substitution.
+  Deliberately *not* done by making the gate character-based: Korean query
+  terms are two to four syllables and would all have fallen below it.
+- **The FTS5 prefilter cut the drawer it was supposed to find.** It is only
+  fail-safe when it matches nothing — `fts_candidates` returns `None` and the
+  scan runs. A non-empty *wrong* answer becomes `seq IN (...)`, removing the
+  right drawer from the scan and from the cosine path with it. `drawers_fts`
+  is external-content with no `tokenize=` option, so it indexes raw text
+  under unicode61 and cannot agree with segmented query terms. Queries
+  carrying a segmented script now bypass it and take the full scan.
+- **BM25 no longer charges a drawer for being segmented.** Length
+  normalization divided by token count, which the n-gram expansion roughly
+  tripled for exactly the documents segmentation exists to serve. Candidates
+  now carry content units — a run counts once per character, not once per
+  emitted n-gram.
+
 - **Arabic, and a scanner per language rather than a word list.** Extraction
   was English-only and failed *silently* — an Arabic corpus produced no
   mentions at all and the vault looked like it had worked. Researched before

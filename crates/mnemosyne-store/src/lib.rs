@@ -1475,7 +1475,12 @@ impl PalaceStore {
             }
         } else {
             match self.fts_min {
-                Some(min) if self.fts && !qterms.is_empty() && self.count()? >= min as u64 => {
+                Some(min)
+                    if self.fts
+                        && !qterms.is_empty()
+                        && !needs_full_scan(&qterms)
+                        && self.count()? >= min as u64 =>
+                {
                     self.fts_candidates(&qterms, std::cmp::max(256, limit * 32))
                 }
                 _ => None,
@@ -1540,16 +1545,19 @@ impl PalaceStore {
             };
             let semantic = ((cosine(&qvec, &emb) + 1.0) / 2.0).clamp(0.0, 1.0);
             let recency = recency_boost(&drawer.meta.filed_at, now);
-            let tokens = if self.fusion == Fusion::Legacy {
-                Vec::new()
+            let (tokens, units) = if self.fusion == Fusion::Legacy {
+                (Vec::new(), 0.0)
             } else {
-                tokenize(&drawer.content)
+                let s = segment(&drawer.content);
+                let units = s.len as f32;
+                (s.tokens, units)
             };
             cands.push(Candidate {
                 drawer,
                 semantic,
                 recency,
                 tokens,
+                units,
             });
         }
 
@@ -1825,23 +1833,78 @@ struct Candidate {
     semantic: f32,
     recency: f32,
     tokens: Vec<String>,
+    /// Content units — see `script::Segmented::len`. Not `tokens.len()`,
+    /// which counts the n-gram expansion.
+    units: f32,
 }
 
-/// Lowercase alphanumeric tokens of length > 1 — the same tokenization the
-/// query goes through, so BM25 term matching is symmetric with the query.
+/// Lowercase comparison tokens — the same tokenization the query goes
+/// through, so BM25 term matching is symmetric with the query.
 ///
-/// Canonicalized first. `is_alphanumeric` is already Unicode-aware, so Arabic
-/// and CJK tokenize; what byte comparison misses is the *same* word written
+/// Canonicalized first: what byte comparison misses is the *same* word written
 /// with a different but canonically equivalent encoding, which would put the
 /// query and the drawer in different buckets for no reason a reader could
 /// see. Both sides run through here, so the fold stays symmetric.
+///
+/// Boundaries then come from `script::segment`. `is_alphanumeric` is
+/// Unicode-aware, but being aware of a character is not the same as knowing
+/// where its words end: in Han, Kana, Hangul, Arabic, Khmer, Thai, Lao and
+/// Myanmar it finds no boundary the writer intended, and a whole clause
+/// became one token. See that module for what each script actually does.
 fn tokenize(content: &str) -> Vec<String> {
-    mnemosyne_core::normalize::match_key(content)
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() > 1)
-        .map(str::to_string)
-        .collect()
+    segment(content).tokens
+}
+
+/// `tokenize`, keeping the content-unit count that BM25 needs for length
+/// normalization. Segmented runs emit unigrams and bigrams, so `tokens.len()`
+/// is no longer a measure of how much a drawer says.
+fn segment(content: &str) -> mnemosyne_core::script::Segmented {
+    mnemosyne_core::script::segment(&mnemosyne_core::normalize::match_key(content).to_lowercase())
+}
+
+/// Whether a query term matches a document token, tolerating one edit.
+///
+/// The tolerance is a port of mempalace's spellcheck extra and it is gated by
+/// length, because a single edit is a large fraction of a short word. That
+/// gate is in **bytes**, so it opens at three characters of Cyrillic and at
+/// *two* of anything CJK — where a one-character substitution is not a typo
+/// but a different word: 北京/東京 are two cities, 中国/美国 two countries,
+/// 한국/중국 likewise, and each pair is one substitution apart.
+///
+/// So for terms written entirely in a script that attaches without a
+/// delimiter, allow insertion and deletion — a particle or clitic arriving —
+/// and never substitution. Elsewhere the historical byte gate stands.
+///
+/// Note this is deliberately *not* "make the gate character-based". Korean
+/// query terms are two to four syllables and would all fall under a five-
+/// character threshold, losing the tolerance that is the only reason Korean
+/// retrieved anything before segmentation existed.
+fn fuzzy_eq(q: &str, tok: &str) -> bool {
+    if q.chars()
+        .all(|c| mnemosyne_core::script::script_of(c).attaches_without_delimiter())
+    {
+        return q.chars().count().abs_diff(tok.chars().count()) == 1 && within_one_edit(q, tok);
+    }
+    q.len() >= 5 && within_one_edit(q, tok)
+}
+
+/// True when a query cannot be served by the FTS5 prefilter.
+///
+/// `drawers_fts` is `content='drawers'` external-content with no `tokenize=`
+/// option, so it indexes raw content under unicode61 — which segments these
+/// scripts no better than we used to. Our query terms are now characters and
+/// bigrams and cannot agree with that index.
+///
+/// The prefilter is only safe when it finds nothing: `fts_candidates` returns
+/// `None` on an empty result and search falls back to a full scan. A
+/// *non-empty* wrong answer becomes `seq IN (...)` and cuts the right drawer
+/// out of the scan entirely — and out of the cosine path with it. Bypassing
+/// keeps the full scan, which is correct and merely slower.
+fn needs_full_scan(qterms: &[String]) -> bool {
+    qterms.iter().any(|t| {
+        t.chars()
+            .any(|c| mnemosyne_core::script::script_of(c).attaches_without_delimiter())
+    })
 }
 
 /// Raw Okapi BM25 per candidate over the candidate set as the corpus, plus
@@ -1858,10 +1921,13 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
     let mut tf = vec![vec![0u32; qterms.len()]; n];
     let mut lengths = vec![0f32; n];
     for (i, c) in cands.iter().enumerate() {
-        lengths[i] = c.tokens.len() as f32;
+        // Content units, not emitted tokens: a segmented run expands into
+        // unigrams plus bigrams, and charging that to document length would
+        // penalise precisely the drawers segmentation exists to reach.
+        lengths[i] = c.units;
         for tok in &c.tokens {
             for (j, q) in qterms.iter().enumerate() {
-                if tok == q || (q.len() >= 5 && within_one_edit(q, tok)) {
+                if tok == q || fuzzy_eq(q, tok) {
                     tf[i][j] += 1;
                     break; // a token fills at most one query-term slot
                 }
@@ -2001,10 +2067,7 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> f32 {
         .collect();
     let matched = qterms
         .iter()
-        .filter(|t| {
-            lower.contains(t.as_str())
-                || (t.len() >= 5 && words.iter().any(|w| within_one_edit(t, w)))
-        })
+        .filter(|t| lower.contains(t.as_str()) || words.iter().any(|w| fuzzy_eq(t, w)))
         .count() as f32;
     let mut score = matched / qterms.len() as f32;
     let phrase = mnemosyne_core::normalize::match_key(raw_query.trim()).to_lowercase();
@@ -4252,6 +4315,135 @@ mod tests {
             .unwrap();
         assert!(!hits.is_empty());
         assert!(hits[0].drawer.content.contains("kubernetes"));
+    }
+
+    /// The headline. Before segmentation these queries returned an **empty
+    /// vector**, not a bad ranking: the clause was one token so BM25 scored
+    /// zero, the hash embedder shared no feature so cosine was 0.0 and
+    /// `semantic` exactly 0.500, and the relevance gate
+    /// (`lexical > 0.0 || semantic > 0.56`) then dropped the only drawer that
+    /// contained the answer. An empty result reads as an empty vault.
+    ///
+    /// So the assertion that matters is "did anything come back at all".
+    #[test]
+    fn a_query_finds_the_drawer_that_contains_it() {
+        let cases = [
+            ("北京", "我昨天去了北京参加会议"),
+            ("東京", "昨日は東京で会議に参加しました"),
+            ("한국어", "한국어는 어렵다"),
+            ("ភ្នំពេញ", "ខ្ញុំបានទៅភ្នំពេញកាលពីម្សិលមិញ"),
+            ("ประชุม", "ประชุมทีมงานที่กรุงเทพ"),
+            // Arabic: the word is present, wearing its definite article.
+            ("كتاب", "قرأت الكتاب أمس"),
+        ];
+        for (query, content) in cases {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "an unrelated note about the weather", 1))
+                .unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            assert!(!hits.is_empty(), "query {query:?} returned nothing");
+            assert_eq!(hits[0].drawer.content, content, "query {query:?}");
+            assert!(hits[0].lexical > 0.0, "query {query:?} matched no term");
+        }
+    }
+
+    /// Segmentation must not turn every short CJK term into a wildcard. The
+    /// byte-gated tolerance opened at two characters, where one substitution
+    /// is a different city, not a typo.
+    #[test]
+    fn a_substitution_in_cjk_is_a_different_word_not_a_typo() {
+        assert!(!fuzzy_eq("北京", "東京"));
+        assert!(!fuzzy_eq("中国", "美国"));
+        assert!(!fuzzy_eq("한국", "중국"));
+        // Insertion and deletion still pass — that is a particle arriving.
+        assert!(fuzzy_eq("한국어", "한국어는"));
+        assert!(fuzzy_eq("北京", "北京市"));
+        // And the Latin tolerance is untouched.
+        assert!(fuzzy_eq("kubernetes", "kubernets"));
+        assert!(!fuzzy_eq("cat", "bat"), "below the byte gate, as before");
+    }
+
+    #[test]
+    fn the_right_city_outranks_the_one_sharing_a_character() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer("w", "r", "我昨天去了北京参加会议", 0))
+            .unwrap();
+        s.upsert(&drawer("w", "r", "東京タワーに行きました", 1))
+            .unwrap();
+        let hits = s.search("北京", &SearchOptions::default()).unwrap();
+        assert!(!hits.is_empty());
+        assert!(
+            hits[0].drawer.content.contains("北京"),
+            "got {:?}",
+            hits[0].drawer.content
+        );
+    }
+
+    /// `drawers_fts` indexes raw content under unicode61, which cannot agree
+    /// with segmented query terms. The prefilter only fails safe when it
+    /// matches *nothing*; a non-empty wrong answer cuts the right drawer out
+    /// of the scan and out of the cosine path with it.
+    #[test]
+    fn the_fts_prefilter_is_bypassed_for_segmented_scripts() {
+        assert!(needs_full_scan(&["北京".to_string()]));
+        assert!(needs_full_scan(&["كتاب".to_string()]));
+        assert!(!needs_full_scan(&["beijing".to_string()]));
+        assert!(!needs_full_scan(&["москва".to_string()]));
+
+        // And end to end, with the prefilter forced on.
+        let (_d, mut s) = store(SecurityLevel::HmacOnly);
+        assert!(s.fts, "hmac-only vaults index for FTS");
+        s.set_fts_prefilter_min(Some(1));
+        s.upsert(&drawer("w", "r", "我昨天去了北京参加会议", 0))
+            .unwrap();
+        for i in 1..5 {
+            s.upsert(&drawer("w", "r", &format!("filler note {i}"), i))
+                .unwrap();
+        }
+        let hits = s.search("北京", &SearchOptions::default()).unwrap();
+        assert!(!hits.is_empty(), "prefilter cut the only matching drawer");
+        assert!(hits[0].drawer.content.contains("北京"));
+    }
+
+    /// The regression guard. Latin-script retrieval must be untouched — the
+    /// segmenter only claims scripts that do not delimit their own words.
+    #[test]
+    fn latin_retrieval_is_unchanged() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer(
+            "w",
+            "r",
+            "the kubernetes cluster upgrade finished",
+            0,
+        ))
+        .unwrap();
+        s.upsert(&drawer("w", "r", "unrelated note about the weather", 1))
+            .unwrap();
+        for mode in [Fusion::Bm25, Fusion::Rrf, Fusion::Legacy] {
+            s.set_fusion(mode);
+            let hits = s
+                .search("kubernetes upgrade", &SearchOptions::default())
+                .unwrap();
+            assert!(!hits.is_empty(), "mode {mode:?}");
+            assert!(
+                hits[0].drawer.content.contains("kubernetes"),
+                "mode {mode:?}"
+            );
+        }
+    }
+
+    /// A long segmented clause must not be buried by BM25 length
+    /// normalization just because it expanded into n-grams.
+    #[test]
+    fn ngram_expansion_does_not_inflate_document_length() {
+        let long = "我昨天去了北京参加会议然后回到上海继续工作并且写了一份很长的报告";
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer("w", "r", long, 0)).unwrap();
+        s.upsert(&drawer("w", "r", "今天天气很好", 1)).unwrap();
+        let hits = s.search("北京", &SearchOptions::default()).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].drawer.content, long);
     }
 
     #[test]
