@@ -2,6 +2,37 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **Arabic, and a scanner per language rather than a word list.** Extraction
+  was English-only and failed *silently* — an Arabic corpus produced no
+  mentions at all and the vault looked like it had worked. Researched before
+  implementing, and the sources changed the design: the past marker
+  **precedes** the count (قبل/منذ ثلاثة أيام), the **dual** is one inflected
+  word with no numeral to read (يومين، أسبوعين، شهرين، سنتين، عامين), and a
+  period modifier **follows** its noun (الأسبوع الماضي) while هذا precedes
+  it. Both current Gregorian month-name systems are matched — the
+  Levantine/Aramaic set (كانون الثاني، شباط…) and the Latin-derived set
+  (يناير، فبراير…) — since neither is a dialect of the other and a corpus can
+  mix them. Numerals are read in both genders. `WeekStart` gains **Saturday**
+  (Egypt, Saudi Arabia, the UAE — CLDR is the authority), and it is the
+  Arabic default because getting the language right and leaving the week
+  European is subtly rather than obviously wrong. Arabic-Indic (U+0660–0669)
+  and Extended Arabic-Indic (U+06F0–06F9) digits are now digits; `str::parse`
+  takes ASCII only, so "٣ أيام" was invisible. The locale is a **read-time**
+  parameter (`language` on `/v1/search` and `mnemosyne_search`), which is the
+  payoff of reading live: a corpus ingested under one locale answers
+  correctly under another with no re-ingest. One bug was found by the tests
+  rather than by reading — اليوم is both "the day" and "today", and the unit
+  reading claimed the token then dropped it, so "today" went missing.
+- **The same word in two encodings is one word.** Nothing canonicalised
+  before comparing, so أ written as U+0623 or as alef plus a combining hamza
+  — the class covering أحمد، إبراهيم، مؤمن، رئيس — was two different pieces
+  of content: different fingerprint so dedup never paired them, different
+  tokens so a query in one encoding could not find a drawer in the other.
+  `normalize::match_key` composes to NFC and derives the **comparison keys**
+  only: stored bytes are untouched, because the promise is verbatim and
+  because `NORMALIZE_VERSION` is inside the drawer id, so folding on the
+  write path would move every future id. NFC and not NFKC — compatibility
+  folding rewrites ﬁ to fi, which changes content rather than encoding.
 - **A sealed vault no longer writes fragments of its content in the clear.**
   `meta_json` is stored unsealed — fine for wing, room, dates and counts, the
   same trade-off plaintext wing/room names already make. It is not fine for

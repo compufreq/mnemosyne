@@ -13,7 +13,12 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
 - `crates/mnemosyne-core` — domain model, chunking, ids, normalization
   (`normalize.rs`: `NormalizeMode::{Prose,Code}` + `mode_for_path` — code
   and fenced blocks keep indentation/trailing space/blank runs; both modes
-  keep the safety floor), temporal extraction (`temporal.rs`: in-text
+  keep the safety floor; `match_key` = NFC **comparison keys only**, never
+  applied to stored bytes — the promise is verbatim and NORMALIZE_VERSION is
+  inside the drawer id, so folding on the write path would move every future
+  id; used by `fingerprint()` and every tokenizer so أ spelled two ways is
+  one word), grounding (`support.rs`: `Support`/`Span`/`Grounding` —
+  spans as offsets, never copied text), temporal extraction (`temporal.rs`: in-text
   absolute + relative dates, resolved against the drawer's `content_date`,
   never guessed; a mention resolves to a **period** (`resolved` +
   `resolved_end`, `range()`) so "May 2023" and "last week" stay the month and
@@ -178,6 +183,12 @@ Heavy cargo work: use the `mnemosyne-target` volume + `CARGO_TARGET_DIR=/build`
   `--features telemetry` — default builds carry zero telemetry deps and emit
   nothing; when on, signals are **metadata/counts only** (never drawer content
   or keys) and nothing leaves the process unless an endpoint is set.
+- Derived structure that is recomputable from content must **not** be
+  persisted in clear beside it, and where it is recomputable at read it
+  generally should not be persisted at all — `time_mentions` and `entities`
+  are both read live (`live_time_mentions_in`, `live_entities`), which is
+  also what makes a scanner fix and a language choice reach existing vaults
+  with no migration.
 - Drawer ids are deterministic over (wing, room, source, chunk_index,
   normalize_version); re-mining must stay idempotent and append-only — a crash
   mid-operation must leave the existing palace untouched. On the API save
@@ -192,7 +203,25 @@ Heavy cargo work: use the `mnemosyne-target` volume + `CARGO_TARGET_DIR=/build`
   and codebooks, and ColBERT token matrices are AEAD-sealed under distinct
   AAD domains (search uses decrypt-once RAM caches; the opt-in PQ page tier
   decrypts lazily per probed list). Tests assert the at-rest bytes; new
-  derived artifacts must follow the same pattern.
+  derived artifacts must follow the same pattern. **`meta_json` is stored
+  UNSEALED**, so nothing that copies words out of the content may live in it
+  — `Drawer::meta_at_rest()` empties `time_mentions[].text` and `entities`
+  before a row is written, keeping only resolutions (offsets + ISO dates,
+  which are not content). What metadata still leaks is measured and pinned by
+  `a_sealed_vault_exposes_metadata_but_never_content`: wing, room,
+  source_file, added_by, hall, content_date, resolved dates. That test fails
+  in **both** directions, so shrinking the exposure forces the inventory to
+  be updated. Closing the rest = keyed blind index (truncated HMAC, as
+  `fingerprint()` already does) for fields needing SQL equality, sealed blob
+  + RAM cache for the rest.
+- Cross-lingual retrieval is the **embedder's** job and the default cannot do
+  it: `HashEmbedder` is feature hashing over surface forms (word unigrams +
+  bigrams + char trigrams, SHA-256 into 384 buckets), so texts match only on
+  shared literal tokens/trigrams — measured, an EN/AR translation pair scores
+  *below* an unrelated sentence, and `car`/`automobile` do not match either.
+  Needs a multilingual model via `onnx`/`ort`, or an external vault. Reading
+  dates *inside* the text is the **scanner's** job (`language` per request)
+  and is independent of which embedder found the drawer.
 - Every write must update the audit chain **atomically with its data**: the
   committed head lives in `chain_meta` and advances via `chain_append` inside
   the same SQLite transaction (the manifest holds a lagging rollback anchor,
