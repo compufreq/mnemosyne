@@ -137,6 +137,10 @@ pub fn script_of(c: char) -> Script {
 pub struct Segmented {
     /// Tokens for term matching. Both the query and the document side go
     /// through this, so matching stays symmetric.
+    /// Every token, **unfiltered**. Callers apply their own minimum-length
+    /// rule: BM25 keeps the historical `len() > 1` *byte* test, while the
+    /// hash embedder has always indexed one-letter words and must keep doing
+    /// so or `vitamin C` stops being distinguishable from `vitamin D`.
     pub tokens: Vec<String>,
     /// Content units, counting a segmented run **once per character** rather
     /// than once per emitted n-gram.
@@ -192,13 +196,7 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
     }
     if !script.attaches_without_delimiter() {
         out.len += 1;
-        // The historical filter: a one-byte token carries no signal. It is a
-        // byte test, so it only ever drops single ASCII letters — every
-        // non-Latin character is 2+ bytes and survives, which is why it was
-        // never the thing standing between us and CJK retrieval.
-        if sub.len() > 1 {
-            out.tokens.push(sub.to_string());
-        }
+        out.tokens.push(sub.to_string());
         return;
     }
     let chars: Vec<char> = sub.chars().collect();
@@ -234,8 +232,14 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
 mod tests {
     use super::*;
 
+    /// Mirrors `mnemosyne_store::tokenize`: segmentation plus the historical
+    /// byte filter, which is the combination BM25 actually sees.
     fn toks(s: &str) -> Vec<String> {
-        segment(&s.to_lowercase()).tokens
+        segment(&s.to_lowercase())
+            .tokens
+            .into_iter()
+            .filter(|t| t.len() > 1)
+            .collect()
     }
 
     /// How many of the query's tokens the document supplies. Zero is the
@@ -371,6 +375,16 @@ mod tests {
     #[test]
     fn tibetan_is_left_alone() {
         assert_eq!(script_of('\u{0F40}'), Script::Other);
+    }
+
+    /// `segment` itself filters nothing — a one-letter word reaches the
+    /// caller, and only BM25 drops it. The hash embedder needs it.
+    #[test]
+    fn one_letter_words_reach_the_caller() {
+        let all = segment("vitamin c").tokens;
+        assert!(all.contains(&"c".to_string()), "{all:?}");
+        // ...and BM25's byte filter is what removes it, as it always has.
+        assert!(!toks("vitamin c").contains(&"c".to_string()));
     }
 
     /// Length must count content, not the n-gram expansion, or BM25's length

@@ -2,10 +2,17 @@
 //!
 //! Mempalace's default embedder is a downloaded sentence-transformer model.
 //! For the Rust port we ship a zero-dependency feature-hashing embedder:
-//! word unigrams + bigrams + character trigrams hashed into a fixed-width
-//! vector, L2-normalized. It is deterministic, needs no network, and gives
-//! useful lexical-semantic recall; a model-backed `Embedder` (ONNX) can be
-//! plugged in behind the same trait later.
+//! unigrams + bigrams + character trigrams over `script::segment`'s units,
+//! hashed into a fixed-width vector and L2-normalized. It is deterministic,
+//! needs no network, and gives useful lexical-semantic recall; a model-backed
+//! `Embedder` (ONNX) can be plugged in behind the same trait later.
+//!
+//! It is feature hashing over **surface forms**, so it matches on shared
+//! literal units and nothing else: `car` and `automobile` do not match, and
+//! neither does a translation pair. Cross-lingual retrieval needs a real
+//! multilingual model. What segmentation buys is the *within-language* case
+//! that was silently broken — a Chinese or Khmer query sharing no feature at
+//! all with a document that visibly contains it.
 
 use sha2::{Digest, Sha256};
 
@@ -30,12 +37,27 @@ impl HashEmbedder {
         (idx, sign)
     }
 
+    /// Feature units for one text.
+    ///
+    /// Canonicalized and segmented by exactly the same rules the store's
+    /// tokenizer uses. Both were previously `split(|c| !c.is_alphanumeric())`
+    /// written out twice, in two crates, and they had drifted apart in two
+    /// ways that mattered:
+    ///
+    /// * No `match_key`, so NFC and NFD spellings of the same word produced
+    ///   different buckets. Composed `أحمد` and its decomposed twin shared
+    ///   one feature of three; `ёлка`, `οδός` and `más` shared **none**. The
+    ///   store folded, this did not, and on a sealed vault this is the only
+    ///   retrieval signal there is.
+    /// * No segmentation, so a Chinese clause hashed as a single feature and
+    ///   the character-trigram family — the one thing that might have
+    ///   rescued it — never fired, because its gate is `chars.len() > 3` and
+    ///   a two-character query like `北京` never reached it.
     fn tokens(text: &str) -> Vec<String> {
-        let lower = text.to_lowercase();
-        let words: Vec<&str> = lower
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .collect();
+        let key = crate::normalize::match_key(text).to_lowercase();
+        // Unfiltered on purpose: one-letter words carry meaning here
+        // (`vitamin C`), even though BM25 drops them.
+        let words = crate::script::segment(&key).tokens;
         let mut toks: Vec<String> = Vec::with_capacity(words.len() * 3);
         for w in &words {
             toks.push(format!("u:{w}"));
@@ -55,9 +77,19 @@ impl HashEmbedder {
     }
 }
 
+/// Identity of the default embedder.
+///
+/// `v2` canonicalizes with `match_key` and segments with `script::segment`,
+/// so it puts different vectors in the index than `v1` did for the same text.
+/// The name is the thing that makes that visible: a vault records it, and an
+/// open that finds a different one is a migration, not a silent swap. See
+/// `PalaceStore::open_with_embedder`.
+pub const HASH_EMBEDDER_V1: &str = "mnemosyne-hash-v1";
+pub const HASH_EMBEDDER: &str = "mnemosyne-hash-v2";
+
 impl Embedder for HashEmbedder {
     fn model_name(&self) -> &str {
-        "mnemosyne-hash-v1"
+        HASH_EMBEDDER
     }
 
     fn dimension(&self) -> usize {
@@ -162,6 +194,52 @@ mod tests {
     fn deterministic() {
         let e = HashEmbedder;
         assert_eq!(e.embed("hello world"), e.embed("hello world"));
+    }
+
+    /// The store folded encodings before comparing and this did not, so on a
+    /// sealed vault — where cosine is the only retrieval signal there is —
+    /// the same word written two legal ways landed in different buckets.
+    #[test]
+    fn one_word_in_two_encodings_is_one_vector() {
+        let e = HashEmbedder;
+        for (composed, decomposed) in [
+            (
+                "\u{0623}\u{062D}\u{0645}\u{062F}",
+                "\u{0627}\u{0654}\u{062D}\u{0645}\u{062F}",
+            ),
+            (
+                "\u{0451}\u{043B}\u{043A}\u{0430}",
+                "\u{0435}\u{0308}\u{043B}\u{043A}\u{0430}",
+            ),
+            ("caf\u{00E9}", "cafe\u{0301}"),
+        ] {
+            assert_ne!(composed, decomposed, "the test inputs must differ as bytes");
+            assert_eq!(
+                e.embed(composed),
+                e.embed(decomposed),
+                "{composed:?} vs {decomposed:?}"
+            );
+        }
+    }
+
+    /// A two-character CJK query never reached the trigram family — its gate
+    /// is `chars.len() > 3` — so it shared no feature at all with a document
+    /// that hashed a whole clause into one bucket.
+    #[test]
+    fn a_short_cjk_query_shares_features_with_its_document() {
+        let e = HashEmbedder;
+        let q = e.embed("北京");
+        let doc = e.embed("我昨天去了北京参加会议");
+        let other = e.embed("今天天气很好适合散步");
+        assert!(cosine(&q, &doc) > 0.0, "no shared feature at all");
+        assert!(cosine(&q, &doc) > cosine(&q, &other));
+    }
+
+    /// One-letter words are meaningful here even though BM25 drops them.
+    #[test]
+    fn single_letter_words_still_count() {
+        let e = HashEmbedder;
+        assert_ne!(e.embed("vitamin c"), e.embed("vitamin d"));
     }
 
     #[test]

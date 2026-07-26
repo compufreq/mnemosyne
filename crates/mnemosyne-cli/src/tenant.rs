@@ -1218,8 +1218,15 @@ impl Tenancy {
                 .map_err(|e| RestError::new(500, e.to_string()))?;
             let embedder =
                 (self.factory)(&vault).map_err(|e| RestError::new(500, e.to_string()))?;
-            let mut store = PalaceStore::open_with_embedder(vault, embedder)
-                .map_err(|e| RestError::new(500, e.to_string()))?;
+            // A read-only server must not rewrite the vault it is serving —
+            // an embedder migration is a bulk write, and the operator asked
+            // this process not to make any.
+            let opened = if self.read_only {
+                PalaceStore::open_read_only(vault, embedder)
+            } else {
+                PalaceStore::open_with_embedder(vault, embedder)
+            };
+            let mut store = opened.map_err(|e| RestError::new(500, e.to_string()))?;
             if let Some(make_reranker) = &self.reranker {
                 store.set_reranker(Some(make_reranker()));
             }

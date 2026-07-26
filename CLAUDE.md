@@ -16,11 +16,10 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   keep the safety floor; `match_key` = NFC **comparison keys only**, never
   applied to stored bytes — the promise is verbatim and NORMALIZE_VERSION is
   inside the drawer id, so folding on the write path would move every future
-  id; used by `fingerprint()` and both **store-side** tokenizers so أ spelled
-  two ways is one word — **`HashEmbedder::tokens()` does NOT apply it**, so
-  NFC and NFD spellings still land in different buckets on the cosine leg;
-  closing that changes stored vectors and needs an embedder-identity bump +
-  re-embed), script-aware segmentation (`script.rs`: `Script` +
+  id; used by `fingerprint()` and **every** tokenizer — including
+  `HashEmbedder::tokens()`, which did not fold until v0.43.0 and so put NFC
+  and NFD spellings of one word in different buckets on the cosine leg),
+  script-aware segmentation (`script.rs`: `Script` +
   `segment` — splitting on `!is_alphanumeric` finds no boundary in Han, Kana,
   Hangul, Bopomofo, Arabic, Khmer, Thai, Lao or Myanmar, so a clause became
   one token and a query for a word the drawer contains returned **nothing at
@@ -32,7 +31,25 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   Latin/digit subruns stay whole so a brand name inside CJK survives;
   delimiting scripts — Latin, Cyrillic, Greek, Georgian, Tibetan — are
   untouched, their defects being folding and morphology, which n-grams do not
-  address), grounding (`support.rs`: `Support`/`Span`/`Grounding` —
+  address. `segment` filters nothing — BM25 applies the historical `len() > 1`
+  **byte** test, the embedder does not, because a one-letter word is signal
+  there), hashed n-gram embedder identity (`embed.rs`: `HASH_EMBEDDER` =
+  `mnemosyne-hash-v2` — v1 neither folded nor segmented; the store migrates
+  v1→v2 **automatically at open** via `KNOWN_EMBEDDER_UPGRADES`, since a user
+  who merely upgraded the binary did not choose a new vector space. Embeddings
+  are not HMAC-covered, so a re-embed never touches a drawer tag or the audit
+  chain — which is why this is not a rotation. The walk is batched, idempotent,
+  and records the new identity **last**, so a crash mid-walk just repeats it;
+  it also drops the PQ/IVF tables, whose codebook quantizes vectors that no
+  longer exist. Unreadable rows are **skipped, not fatal** — a walk inside
+  `open` that aborts leaves the vault unopenable for `verify` and `repair`
+  too, which is worse than a stale vector on a row that already fails every
+  read. `MNEMOSYNE_FORCE_EMBEDDER=1` is checked **before** the migration
+  branch or it would be dead code for the one transition that can fail, and
+  `open_read_only` (used by `serve --read-only`) warns instead of writing.
+  A swap to or from a *model* embedder stays manual —
+  `MNEMOSYNE_FORCE_EMBEDDER=1` + `repair`), grounding (`support.rs`:
+  `Support`/`Span`/`Grounding` —
   spans as offsets, never copied text), temporal extraction (`temporal.rs`: in-text
   absolute + relative dates, resolved against the drawer's `content_date`,
   never guessed; a mention resolves to a **period** (`resolved` +
@@ -83,7 +100,10 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   default-off by its measured containment gate), experimental in-memory
   HNSW (hnsw.rs, `hnsw` feature), transactional audit chain (`chain_meta` + `chain_append`),
   verify, knowledge graph (kg.rs), management surface (manage.rs),
-  remote-index integration (remote.rs), in-place key rotation
+  remote-index integration (remote.rs — a mirror records the embedder it was
+  pushed with; `search_with_index` refuses a mismatch rather than ranking a
+  v2 query against v1 vectors, which returned an empty result with no error),
+  in-place key rotation
   (rotate.rs: one-transaction re-seal of every artifact + chain re-key
   over preserved audit bytes, crash-reconciled at open), bulk ingest
   (`upsert_many`: one transaction + one manifest anchor per batch —

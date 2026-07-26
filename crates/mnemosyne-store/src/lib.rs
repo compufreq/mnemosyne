@@ -39,6 +39,21 @@ use mnemosyne_vault::{SecurityLevel, Vault, VaultError};
 /// Below this a full decrypt-free scan is cheap and keeps semantic-only
 /// recall exact; above it the FTS5 candidate cut dominates search cost.
 const DEFAULT_FTS_PREFILTER_MIN: usize = 2048;
+
+/// Embedder identity changes this build performs on its own.
+///
+/// Only the built-in hash embedder appears here. It is deterministic, local
+/// and cheap, so re-embedding a vault is a walk rather than a model run — and
+/// because it ships inside the binary, a user who merely upgraded did not
+/// choose a new embedding space and should not have to repair one by hand.
+///
+/// A swap to or from a model-backed embedder is never automatic: that is
+/// potentially hours of inference and a deliberate decision, so it keeps the
+/// explicit `MNEMOSYNE_FORCE_EMBEDDER` + `repair` path.
+const KNOWN_EMBEDDER_UPGRADES: &[(&str, &str)] = &[(
+    mnemosyne_core::embed::HASH_EMBEDDER_V1,
+    mnemosyne_core::embed::HASH_EMBEDDER,
+)];
 /// Default number of fusion-ranked candidates a reranker re-scores per search
 /// (override with `MNEMOSYNE_RERANK_TOP_N`). One cross-encoder forward pass
 /// runs per candidate, so this bounds the added latency.
@@ -159,6 +174,12 @@ pub enum StoreError {
     },
     #[error("remote index error: {0}")]
     Index(#[from] mnemosyne_index::IndexError),
+    #[error(
+        "the remote index was built with embedder {pushed:?} but this vault now uses \
+         {current:?}; vectors from two embedding spaces cannot be compared, so its candidates \
+         would be meaningless. Run `mnemosyne index push` to rebuild it."
+    )]
+    IndexStale { pushed: String, current: String },
     #[error("this vault uses external embeddings; writes must supply a vector")]
     ExternalVault,
     #[error("this vault computes its own embeddings; a vector may not be supplied")]
@@ -397,12 +418,29 @@ impl PalaceStore {
         vault: Vault,
         embedder: Box<dyn Embedder + Send>,
     ) -> Result<Self, StoreError> {
-        let store = Self::open_inner(vault, embedder)?;
-        store.enforce_embedder_identity()?;
+        let mut store = Self::open_inner(vault, embedder)?;
+        store.enforce_embedder_identity(true)?;
         Ok(store)
     }
 
-    fn enforce_embedder_identity(&self) -> Result<(), StoreError> {
+    /// Open for a role that must not write.
+    ///
+    /// A read-only replica still has to serve reads across an embedder
+    /// upgrade, so a mismatch here neither migrates nor refuses: it warns and
+    /// leaves the old vectors in place. The semantic leg is then comparing
+    /// vectors from two different spaces and is not trustworthy, which the
+    /// warning says — the lexical leg is unaffected, and `search` already
+    /// admits a hit on lexical evidence alone.
+    pub fn open_read_only(
+        vault: Vault,
+        embedder: Box<dyn Embedder + Send>,
+    ) -> Result<Self, StoreError> {
+        let mut store = Self::open_inner(vault, embedder)?;
+        store.enforce_embedder_identity(false)?;
+        Ok(store)
+    }
+
+    fn enforce_embedder_identity(&mut self, may_migrate: bool) -> Result<(), StoreError> {
         let stored_name: Option<String> = self
             .conn
             .query_row(
@@ -424,22 +462,148 @@ impl PalaceStore {
         match (stored_name, stored_dim) {
             (Some(name), Some(dim)) => {
                 let dim: usize = dim.parse().unwrap_or(0);
-                if name != current_name || (dim != 0 && dim != current_dim) {
-                    if std::env::var("MNEMOSYNE_FORCE_EMBEDDER").ok().as_deref() == Some("1") {
-                        self.record_embedder_identity()?;
+                if name == current_name && (dim == 0 || dim == current_dim) {
+                    return Ok(());
+                }
+                // The documented override comes first, so it dominates every
+                // identity path. Putting it after the migration branch would
+                // make it dead code for the one transition that actually does
+                // fallible work, leaving an operator whose migration cannot
+                // complete with no way in.
+                if std::env::var("MNEMOSYNE_FORCE_EMBEDDER").ok().as_deref() == Some("1") {
+                    self.record_embedder_identity()?;
+                    return Ok(());
+                }
+                // A known, dimension-preserving upgrade of the built-in
+                // embedder is a migration we know how to run, not a mismatch
+                // to refuse. `dim == 0` means the stored dimension is
+                // unparseable, which is not evidence that it matches — treat
+                // it as a mismatch rather than migrating on an assumption.
+                let known = KNOWN_EMBEDDER_UPGRADES
+                    .iter()
+                    .any(|(from, to)| *from == name && *to == current_name);
+                if known && dim == current_dim {
+                    if !may_migrate {
+                        mnemosyne_obs::diag_warn!(
+                            "vault holds {name} embeddings but this build uses {current_name}; \
+                             opened read-only so they are left as they are — the semantic \
+                             ranking is not meaningful until a writable open migrates them"
+                        );
                         return Ok(());
                     }
-                    return Err(StoreError::EmbedderMismatch {
-                        stored: name,
-                        stored_dim: dim,
-                        current: current_name,
-                        current_dim,
-                    });
+                    return self.migrate_embedding_space();
                 }
-                Ok(())
+                Err(StoreError::EmbedderMismatch {
+                    stored: name,
+                    stored_dim: dim,
+                    current: current_name,
+                    current_dim,
+                })
             }
             _ => self.record_embedder_identity(),
         }
+    }
+
+    /// Re-embed every drawer after a known upgrade of the built-in embedder.
+    ///
+    /// **Safe to interrupt.** Embeddings are derived data and are not covered
+    /// by the record HMAC, so nothing here touches a drawer tag or the audit
+    /// chain — which is exactly why a re-embed is not a rotation. Re-embedding
+    /// is idempotent (same content, same embedder, same vector), and the new
+    /// identity is written only after the last row lands, so a crash mid-walk
+    /// leaves the old identity in place and the next open repeats the whole
+    /// walk to the same result.
+    ///
+    /// Every drawer is read through `get`, so the pass verifies each record's
+    /// HMAC on the way past. A tampered vault fails the migration rather than
+    /// quietly re-embedding corrupt content.
+    fn migrate_embedding_space(&mut self) -> Result<(), StoreError> {
+        let ids: Vec<String> = self
+            .conn
+            .prepare("SELECT id FROM drawers ORDER BY seq")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        // This runs inside `open`, so on a large vault it must say what it is
+        // doing rather than look like a hang. Counts and identities only —
+        // never content.
+        if !ids.is_empty() {
+            mnemosyne_obs::diag_info!(
+                "migrating {} drawers to embedder {} (one-time, resumable)",
+                ids.len(),
+                mnemosyne_core::embed::HASH_EMBEDDER
+            );
+        }
+        // Batched rather than one transaction: a vault with 100k drawers
+        // should not hold a single write lock for the length of the walk, and
+        // idempotency plus the deferred identity write make batching safe.
+        let mut damaged = 0u64;
+        for chunk in ids.chunks(512) {
+            let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(chunk.len());
+            for id in chunk {
+                // A drawer that cannot be read is skipped, not fatal. `get`
+                // verifies the record HMAC, so a corrupt or tampered row
+                // errors here — and aborting would turn a vault that was
+                // damaged-but-mostly-readable into one that opens for nothing
+                // at all, including `verify`, which is the only tool that can
+                // name the damage. Its old vector stays; a row that fails
+                // every read does not have a recall problem.
+                match self.get(id) {
+                    Ok(Some(d)) => {
+                        let emb = self.embedder_embed(&d.content);
+                        rows.push((id.clone(), self.vault.embedding_at_rest(id, &emb)));
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        damaged += 1;
+                        mnemosyne_obs::diag_warn!(
+                            "drawer {id} could not be read during re-embed and was left \
+                             untouched; run `verify`"
+                        );
+                    }
+                }
+            }
+            let tx = self.conn.transaction()?;
+            {
+                let mut up = tx.prepare("UPDATE drawers SET embedding = ?1 WHERE id = ?2")?;
+                for (id, blob) in &rows {
+                    up.execute(params![blob, id])?;
+                }
+            }
+            tx.commit()?;
+        }
+        if damaged > 0 {
+            mnemosyne_obs::diag_warn!(
+                "{damaged} drawer(s) could not be re-embedded; the vault is open and the rest \
+                 migrated — run `verify` to see which"
+            );
+        }
+        self.invalidate_embedding_space()?;
+        // Recorded even when rows were skipped. Withholding it would make
+        // every future open repeat the whole walk for damage that only
+        // `repair` can clear — and on the multi-tenant server that is once
+        // per request.
+        self.record_embedder_identity()
+    }
+
+    /// Discard everything derived from the *previous* embedding vectors.
+    ///
+    /// The PQ/IVF index quantizes the vector space: its codes, pages and
+    /// codebook all describe embeddings that no longer exist, and a stale
+    /// codebook does not fail loudly — it silently returns the wrong
+    /// candidates. Dropping the tables lets the existing self-heal rebuild
+    /// them.
+    ///
+    /// ColBERT token matrices (`drawer_tok`) and the FDE index are built from
+    /// the late-interaction model rather than this one, so they are correct
+    /// across an embedder change and are deliberately left in place.
+    pub(crate) fn invalidate_embedding_space(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch(
+            "DROP TABLE IF EXISTS drawer_pq;
+             DROP TABLE IF EXISTS pq_page;
+             DROP TABLE IF EXISTS pq_meta;",
+        )?;
+        self.drop_derived_caches();
+        Ok(())
     }
 
     fn record_embedder_identity(&self) -> Result<(), StoreError> {
@@ -1550,7 +1714,11 @@ impl PalaceStore {
             } else {
                 let s = segment(&drawer.content);
                 let units = s.len as f32;
-                (s.tokens, units)
+                // Same minimum-length rule the query side applies, so term
+                // matching stays symmetric rather than relying on a one-byte
+                // token happening never to match anything.
+                let tokens: Vec<String> = s.tokens.into_iter().filter(|t| t.len() > 1).collect();
+                (tokens, units)
             };
             cands.push(Candidate {
                 drawer,
@@ -1852,7 +2020,16 @@ struct Candidate {
 /// Myanmar it finds no boundary the writer intended, and a whole clause
 /// became one token. See that module for what each script actually does.
 fn tokenize(content: &str) -> Vec<String> {
-    segment(content).tokens
+    // The historical minimum-length rule, kept exactly: it is a *byte* test,
+    // so it only ever drops single ASCII letters — every non-Latin character
+    // is 2+ bytes and always survived it. Changing it to characters would
+    // silently delete every one-letter Cyrillic, Greek and Arabic token from
+    // every existing vault, so it stays as it is.
+    segment(content)
+        .tokens
+        .into_iter()
+        .filter(|t| t.len() > 1)
+        .collect()
 }
 
 /// `tokenize`, keeping the content-unit count that BM25 needs for length
@@ -1883,7 +2060,13 @@ fn fuzzy_eq(q: &str, tok: &str) -> bool {
     if q.chars()
         .all(|c| mnemosyne_core::script::script_of(c).attaches_without_delimiter())
     {
-        return q.chars().count().abs_diff(tok.chars().count()) == 1 && within_one_edit(q, tok);
+        let (qn, tn) = (q.chars().count(), tok.chars().count());
+        // Both sides must be at least two characters. A one-character query
+        // term is one insertion away from *every* bigram containing it, so
+        // `北` would claim 北, 东北 and 北虎 in one drawer and score a
+        // Siberian-tiger note as three occurrences of the query. Korean
+        // particles (한국어/한국어는) and 北京/北京市 are unaffected.
+        return qn.min(tn) >= 2 && qn.abs_diff(tn) == 1 && within_one_edit(q, tok);
     }
     q.len() >= 5 && within_one_edit(q, tok)
 }
@@ -1926,11 +2109,20 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
         // penalise precisely the drawers segmentation exists to reach.
         lengths[i] = c.units;
         for tok in &c.tokens {
-            for (j, q) in qterms.iter().enumerate() {
-                if tok == q || fuzzy_eq(q, tok) {
-                    tf[i][j] += 1;
-                    break; // a token fills at most one query-term slot
-                }
+            // A token fills at most one query-term slot, and an *exact* match
+            // outranks a fuzzy one wherever the two compete. Taking the first
+            // match of either kind let an earlier fuzzy term steal a token
+            // that exactly equals a later one: for query `دفتر دفاتر`, a
+            // document saying `دفاتر` scored as evidence for `دفتر` while
+            // `دفاتر` — literally present — kept df = 0 and therefore maximal
+            // IDF for a term that occurs. The document was scored as if it
+            // contained a different word.
+            if let Some(j) = qterms.iter().position(|q| q == tok) {
+                tf[i][j] += 1;
+                continue;
+            }
+            if let Some(j) = qterms.iter().position(|q| fuzzy_eq(q, tok)) {
+                tf[i][j] += 1;
             }
         }
     }
@@ -4444,6 +4636,405 @@ mod tests {
         let hits = s.search("北京", &SearchOptions::default()).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].drawer.content, long);
+    }
+
+    // ------------------------------------------------------------------
+    // Embedder identity migration
+    // ------------------------------------------------------------------
+
+    /// Put a vault back into the state a v1 build left it in: the old
+    /// identity recorded, and embeddings that are not what v2 would produce.
+    /// Junk vectors are the point — if the migration does not actually run,
+    /// the drawer stays unfindable and the test says so.
+    fn make_it_look_like_v1(s: &PalaceStore) {
+        s.conn
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'embedder_name'",
+                params![mnemosyne_core::embed::HASH_EMBEDDER_V1],
+            )
+            .unwrap();
+        let junk = vec![0.0f32; mnemosyne_core::embed::EMBED_DIM];
+        let ids: Vec<String> = s
+            .conn
+            .prepare("SELECT id FROM drawers")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for id in ids {
+            let blob = s.vault.embedding_at_rest(&id, &junk);
+            s.conn
+                .execute(
+                    "UPDATE drawers SET embedding = ?1 WHERE id = ?2",
+                    params![blob, id],
+                )
+                .unwrap();
+        }
+    }
+
+    fn reopen_vault(dir: &TempDir) -> Result<PalaceStore, StoreError> {
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        PalaceStore::open(mgr.unlock("test").unwrap())
+    }
+
+    /// Upgrading the binary must not hand the user a broken vault, and must
+    /// not require them to know an env var exists.
+    #[test]
+    fn a_v1_vault_migrates_itself_on_open() {
+        for level in [SecurityLevel::Sealed, SecurityLevel::HmacOnly] {
+            let dir = TempDir::new().unwrap();
+            let mgr = VaultManager::open(dir.path(), None).unwrap();
+            let vault = mgr.create("test", level).unwrap();
+            {
+                let mut s = PalaceStore::open(vault).unwrap();
+                s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                    .unwrap();
+                s.upsert(&drawer("w", "r", "unrelated note about rain", 1))
+                    .unwrap();
+                make_it_look_like_v1(&s);
+            }
+
+            let s = reopen_vault(&dir).expect("a known upgrade must not refuse to open");
+
+            let stored: String = s
+                .conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='embedder_name'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, mnemosyne_core::embed::HASH_EMBEDDER, "{level:?}");
+
+            // The vectors were actually rewritten, not just the label.
+            let hits = s
+                .search("heron verbatim", &SearchOptions::default())
+                .unwrap();
+            assert!(!hits.is_empty(), "{level:?}");
+            assert!(hits[0].drawer.content.contains("heron"), "{level:?}");
+            assert!(hits[0].semantic > 0.5, "{level:?} — still the junk vector");
+        }
+    }
+
+    /// The migration writes the new identity last, so an interrupted walk
+    /// leaves the vault claiming v1 and the next open simply does it again.
+    /// Re-embedding is idempotent, so repeating it is free of consequence.
+    #[test]
+    fn an_interrupted_migration_is_retried_and_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                .unwrap();
+            make_it_look_like_v1(&s);
+        }
+        let read_vector = |s: &PalaceStore| -> Vec<f32> {
+            let (id, blob): (String, Vec<u8>) = s
+                .conn
+                .query_row("SELECT id, embedding FROM drawers", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            s.vault.embedding_from_rest(&id, &blob).unwrap()
+        };
+        let first = {
+            let s = reopen_vault(&dir).unwrap();
+            read_vector(&s)
+        };
+        // Pretend the identity write never landed, and run it again.
+        {
+            let s = reopen_vault(&dir).unwrap();
+            s.conn
+                .execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'embedder_name'",
+                    params![mnemosyne_core::embed::HASH_EMBEDDER_V1],
+                )
+                .unwrap();
+        }
+        let s = reopen_vault(&dir).unwrap();
+        // Sealed embeddings carry a random nonce, so the ciphertext differs
+        // between runs while the vector underneath must not.
+        assert_eq!(first, read_vector(&s), "re-running the walk moved a vector");
+        let hits = s
+            .search("heron verbatim", &SearchOptions::default())
+            .unwrap();
+        assert!(!hits.is_empty());
+    }
+
+    /// One damaged drawer must not cost the user the other fifty thousand —
+    /// especially since `verify`, the only tool that can name the damage,
+    /// needs an open store to run.
+    #[test]
+    fn one_unreadable_drawer_does_not_make_the_vault_unopenable() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        let victim: String;
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                .unwrap();
+            s.upsert(&drawer("w", "r", "a second intact drawer about rain", 1))
+                .unwrap();
+            victim = s
+                .conn
+                .query_row("SELECT id FROM drawers ORDER BY seq LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            // Corrupt the tag so `get` fails its HMAC check on this row only.
+            s.conn
+                .execute(
+                    "UPDATE drawers SET tag = ?1 WHERE id = ?2",
+                    params![vec![0u8; 32], victim],
+                )
+                .unwrap();
+            make_it_look_like_v1(&s);
+        }
+        let s = reopen_vault(&dir).expect("one bad drawer must not lock the vault");
+
+        // The walk continued past the damaged row: the intact drawer now
+        // holds the vector v2 produces for its content.
+        let (intact_id, blob, content): (String, Vec<u8>, Vec<u8>) = s
+            .conn
+            .query_row(
+                "SELECT id, embedding, content FROM drawers WHERE id != ?1",
+                params![victim],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let stored = s.vault.embedding_from_rest(&intact_id, &blob).unwrap();
+        let plain = s.vault.content_from_rest(&intact_id, &content).unwrap();
+        let expected = HashEmbedder.embed(std::str::from_utf8(&plain).unwrap());
+        assert_eq!(stored.len(), expected.len());
+        assert!(
+            mnemosyne_core::embed::cosine(&stored, &expected) > 0.99,
+            "the intact drawer was not re-embedded"
+        );
+
+        // And `verify` — the only tool that can name the damage — is now
+        // reachable, which it would not be if open had failed.
+        let report = s.verify().unwrap();
+        assert!(
+            report.bad_records.contains(&victim),
+            "verify should still name the damaged drawer"
+        );
+        // Note: `search` remains intolerant of a corrupt row (the candidate
+        // loader propagates the HMAC failure). That predates this change and
+        // is not addressed here — what the tolerant walk buys is that `open`,
+        // and therefore `verify` and `repair`, still work.
+    }
+
+    /// A read-only role serves reads across the upgrade; it does not rewrite
+    /// the vault it was told not to write to.
+    #[test]
+    fn a_read_only_open_does_not_migrate() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                .unwrap();
+            make_it_look_like_v1(&s);
+        }
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let s = PalaceStore::open_read_only(mgr.unlock("test").unwrap(), Box::new(HashEmbedder))
+            .expect("a read-only open must still succeed");
+        let stored: String = s
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='embedder_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            mnemosyne_core::embed::HASH_EMBEDDER_V1,
+            "a read-only open rewrote the vault"
+        );
+        // The lexical leg still works, which is the point of degrading
+        // rather than refusing.
+        let hits = s
+            .search("heron verbatim", &SearchOptions::default())
+            .unwrap();
+        assert!(!hits.is_empty());
+    }
+
+    /// The documented override has to dominate every identity path, including
+    /// the one that now does fallible work.
+    #[test]
+    fn force_embedder_still_overrides_a_known_upgrade() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                .unwrap();
+            make_it_look_like_v1(&s);
+        }
+        std::env::set_var("MNEMOSYNE_FORCE_EMBEDDER", "1");
+        let s = reopen_vault(&dir).unwrap();
+        // Identity recorded, but no walk ran — the junk vector is still there.
+        let hits = s
+            .search("heron verbatim", &SearchOptions::default())
+            .unwrap();
+        let migrated = hits.first().map(|h| h.semantic > 0.5).unwrap_or(false);
+        std::env::remove_var("MNEMOSYNE_FORCE_EMBEDDER");
+        assert!(!migrated, "the override should have skipped the migration");
+    }
+
+    /// A single ideograph is one insertion from every bigram containing it.
+    #[test]
+    fn a_one_character_query_is_not_a_wildcard() {
+        assert!(!fuzzy_eq("北", "东北"));
+        assert!(!fuzzy_eq("北", "北虎"));
+        // Two-character terms keep the particle/suffix tolerance.
+        assert!(fuzzy_eq("한국어", "한국어는"));
+        assert!(fuzzy_eq("北京", "北京市"));
+    }
+
+    /// A real model swap is a decision, not something to do behind the
+    /// user's back — hours of inference and a different vector space.
+    #[test]
+    fn an_unknown_embedder_swap_still_refuses() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "a note", 0)).unwrap();
+            s.conn
+                .execute(
+                    "UPDATE meta SET value = 'some-onnx-model' WHERE key = 'embedder_name'",
+                    [],
+                )
+                .unwrap();
+        }
+        match reopen_vault(&dir) {
+            Err(StoreError::EmbedderMismatch { .. }) => {}
+            Err(e) => panic!("wrong error: {e:?}"),
+            Ok(_) => panic!("a model swap must never happen behind the user's back"),
+        }
+    }
+
+    /// PQ codes quantize the old vector space. A stale codebook does not
+    /// fail loudly — it returns the wrong candidates.
+    #[test]
+    fn migration_discards_the_quantized_index() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files drawers", 0))
+                .unwrap();
+            s.pq_schema().unwrap();
+            s.conn
+                .execute(
+                    "INSERT INTO pq_meta (key, value) VALUES ('codebook', x'00')",
+                    [],
+                )
+                .unwrap();
+            make_it_look_like_v1(&s);
+        }
+        let s = reopen_vault(&dir).unwrap();
+        let stale: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'pq_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, 0, "the old codebook outlived the vectors it encoded");
+    }
+
+    /// The migration runs inside `open`, so its cost is a user-visible pause.
+    /// Not part of the normal suite — run explicitly:
+    /// `cargo test --release -p mnemosyne-store -- --ignored migration_at_scale --nocapture`
+    #[test]
+    #[ignore]
+    fn migration_at_scale() {
+        const N: usize = 20_000;
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            let batch: Vec<Drawer> = (0..N)
+                .map(|i| {
+                    drawer(
+                        "w",
+                        "r",
+                        &format!(
+                            "drawer {i}: the heron files verbatim drawers into wings and rooms, \
+                             and this sentence exists to give the embedder realistic work to do"
+                        ),
+                        i as u32,
+                    )
+                })
+                .collect();
+            s.upsert_many(&batch).unwrap();
+            make_it_look_like_v1(&s);
+        }
+        let t0 = std::time::Instant::now();
+        let s = reopen_vault(&dir).unwrap();
+        let elapsed = t0.elapsed();
+        eprintln!(
+            "migrated {N} drawers in {:?} ({:.1} µs/drawer)",
+            elapsed,
+            elapsed.as_secs_f64() * 1e6 / N as f64
+        );
+        let hits = s
+            .search("heron verbatim", &SearchOptions::default())
+            .unwrap();
+        assert!(!hits.is_empty());
+    }
+
+    /// A document containing the query term verbatim must be scored as
+    /// containing it, not as containing a term it merely resembles.
+    #[test]
+    fn an_exact_match_outranks_a_fuzzy_one_for_the_same_token() {
+        // The discriminating case is a drawer holding BOTH surface forms.
+        // Old behaviour: the exact token `kubernets` is claimed by query term
+        // 0, and `kubernetes` is *also* claimed by term 0 (one edit away),
+        // giving tf = [2, 0] — one term, saturated by k1. New behaviour: each
+        // token fills its own exact slot, tf = [1, 1] — two terms, neither
+        // saturated, which scores strictly higher. Anything that ranks on a
+        // cosine tie instead would pass with the fix reverted.
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer("w", "r", "kubernets kubernetes both forms here", 0))
+            .unwrap();
+        s.upsert(&drawer("w", "r", "kubernets kubernets twice the typo", 1))
+            .unwrap();
+        s.set_fusion(Fusion::Bm25);
+        let hits = s
+            .search("kubernets kubernetes", &SearchOptions::default())
+            .unwrap();
+        assert!(!hits.is_empty());
+        assert!(
+            hits[0].drawer.content.contains("both forms"),
+            "got {:?}",
+            hits[0].drawer.content
+        );
+        // And directly: two distinct query terms must both find evidence.
+        let both = tokenize("kubernets kubernetes both forms here");
+        let qterms = tokenize("kubernets kubernetes");
+        let cands = vec![Candidate {
+            drawer: drawer("w", "r", "kubernets kubernetes both forms here", 0),
+            semantic: 0.0,
+            recency: 0.0,
+            units: both.len() as f32,
+            tokens: both,
+        }];
+        let (raw, _) = bm25_raw(&qterms, &cands);
+        assert!(raw[0] > 0.0);
     }
 
     #[test]

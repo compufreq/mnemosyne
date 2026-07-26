@@ -15,6 +15,7 @@
 
 use base64::Engine;
 use mnemosyne_index::{IndexRecord, VectorIndex};
+use rusqlite::{params, OptionalExtension};
 
 use crate::{PalaceStore, SearchHit, SearchOptions, StoreError};
 
@@ -68,7 +69,38 @@ impl PalaceStore {
             index.upsert(&collection, &batch)?;
             pushed += batch.len() as u64;
         }
+        self.record_pushed_embedder()?;
         Ok(pushed)
+    }
+
+    /// Remember which embedding space the mirror was built in.
+    ///
+    /// The collection name is derived from the vault id alone, so nothing
+    /// about a remote mirror records what its vectors mean. That is fine
+    /// while the embedder never changes and silently wrong the moment it
+    /// does: the query is embedded locally by the *current* embedder and
+    /// matched against whatever the remote still holds.
+    fn record_pushed_embedder(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('index_pushed_embedder', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![self.embedder.model_name()],
+        )?;
+        Ok(())
+    }
+
+    /// The embedder the remote mirror was pushed with, if it was ever pushed
+    /// from a build that recorded one.
+    fn pushed_embedder(&self) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'index_pushed_embedder'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
     }
 
     /// Search using a remote index for candidate retrieval. Candidates are
@@ -80,6 +112,20 @@ impl PalaceStore {
         opts: &SearchOptions,
     ) -> Result<Vec<SearchHit>, StoreError> {
         let limit = if opts.limit == 0 { 10 } else { opts.limit };
+        // A mirror built in a different embedding space cannot rank: the
+        // query is embedded here and compared there, so the candidates come
+        // back effectively at random and local re-scoring then drops them —
+        // an empty result from a vault that holds the answer. Refuse, and say
+        // what to run, rather than return that quietly.
+        if let Some(pushed) = self.pushed_embedder() {
+            let current = self.embedder.model_name();
+            if pushed != current {
+                return Err(StoreError::IndexStale {
+                    pushed,
+                    current: current.to_string(),
+                });
+            }
+        }
         let collection = self.index_collection();
         index.ensure(&collection, self.embedder_dimension())?;
         let qvec = self.embedder_embed(query);

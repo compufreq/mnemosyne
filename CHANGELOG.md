@@ -2,6 +2,72 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **The embedder was reading a different alphabet than the tokenizer.**
+  `HashEmbedder::tokens()` had its own copy of the split and applied neither
+  `match_key` nor segmentation, so the cosine leg disagreed with the lexical
+  one about what a word is. Composed `أحمد` and its decomposed twin shared one
+  feature of three; `ёلка`, `οδός` and `más` shared **none**. On a sealed
+  vault that is not a second opinion — cosine is the only retrieval signal
+  there is. It now uses exactly the store's rules, which changes the vectors
+  and therefore the embedder's identity: **`mnemosyne-hash-v1` →
+  `mnemosyne-hash-v2`**.
+- **Upgrading the binary migrates the vault instead of refusing to open it.**
+  A recorded identity that no longer matches was an error telling the user to
+  set `MNEMOSYNE_FORCE_EMBEDDER=1` and run `repair` — reasonable for a model
+  swap the user chose, wrong for a built-in embedder that changed underneath
+  them. Known, dimension-preserving upgrades of the default embedder now
+  re-embed on open. Embeddings are derived data and carry no HMAC, so the walk
+  never touches a drawer tag or the audit chain — this is why a re-embed is
+  not a rotation. It is batched (a 100k-drawer vault must not hold one write
+  lock for the whole pass), idempotent, and records the new identity **last**,
+  so an interrupted migration simply runs again. Every drawer is read through
+  `get`, so each record's HMAC is verified on the way past. Swaps to or from a
+  *model* embedder are still refused — that is hours of inference and a
+  decision the user should make.
+  Three things the migration is careful about, each found by reviewing it
+  rather than by running it:
+  **One damaged drawer does not cost you the rest.** Verifying every record on
+  the way past means a corrupt or tampered row makes the walk fail, and a walk
+  inside `open` failing means the vault does not open *at all* — including for
+  `verify`, the one tool that can name the damage, and `repair`, the one that
+  can clear it. Unreadable rows are now skipped with a warning naming the id,
+  the rest migrate, and the vault opens. (`search` is still intolerant of a
+  corrupt row; that predates this and is not addressed here.)
+  **`MNEMOSYNE_FORCE_EMBEDDER=1` comes first.** Checked after the migration
+  branch it was dead code for the only transition that does fallible work,
+  which removed the documented escape from exactly the situation needing one.
+  **A read-only role does not migrate.** `serve --read-only` guards its write
+  *routes*, but every route opens the store, so the migration would have
+  performed a bulk rewrite the operator explicitly forbade. `open_read_only`
+  warns and leaves the vectors alone; the lexical leg still serves.
+- **A remote index went on answering with vectors from a space that no longer
+  existed.** `index_collection()` is derived from the vault id alone, so
+  nothing recorded which embedder a mirror was built with. After an upgrade the
+  query was embedded locally under v2 and matched against v1 vectors on the
+  remote: candidates come back effectively at random, local re-scoring then
+  drops them, and the user gets an empty result from a vault that holds the
+  answer — with no error. `index push` now records the embedder, and
+  `search_with_index` refuses a mismatched mirror and names the fix. This one
+  is not specific to v1→v2; it was wrong for any embedder change.
+- **A one-character CJK query was a wildcard.** `北` is one insertion from
+  *every* bigram containing it, so a single occurrence in a drawer about
+  Siberian tigers (东北虎) was counted three times — 北, 东北, 北虎 — and
+  competed with genuine 北京 hits. The insertion/deletion tolerance now
+  requires two characters on both sides, which keeps 한국어/한국어는 and
+  北京/北京市 and drops only the wildcard.
+- **A stale PQ codebook outlived the vectors it encoded.** `repair` re-embedded
+  without invalidating the quantized index, whose codes and codebook describe
+  the old vector space. That failure is silent: the index does not error, it
+  returns the wrong candidates. Both `repair` and the new migration now drop
+  `drawer_pq` / `pq_page` / `pq_meta` and let the existing self-heal rebuild.
+  ColBERT token matrices and the FDE index are built from the late-interaction
+  model rather than this one and are correctly left alone.
+- **A document containing the query term verbatim was scored as containing a
+  different word.** In `bm25_raw` a token filled the first query slot it
+  matched, and exact and one-edit matches had equal standing. For a query like
+  `دفتر دفاتر`, a document saying `دفاتر` was counted as evidence for `دفتر`
+  while `دفاتر` — literally present — kept `df = 0` and therefore maximal IDF
+  for a term that occurs. Exact matches now claim their token first.
 - **A query for a word the drawer contains returned nothing.** Not a bad
   ranking — an empty array that reads as an empty vault. Tokenizing splits on
   `!char::is_alphanumeric()`, which finds a boundary only in scripts that

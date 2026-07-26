@@ -452,6 +452,9 @@ impl PalaceStore {
                 )?;
             }
         }
+        // The PQ/IVF index quantizes the vectors we just replaced; a stale
+        // codebook does not fail loudly, it returns the wrong candidates.
+        self.invalidate_embedding_space()?;
         self.record_embedder_identity()?;
         self.conn.execute_batch("VACUUM;")?;
         Ok((self.verify()?, fixed))
