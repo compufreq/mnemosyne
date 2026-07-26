@@ -208,12 +208,28 @@ impl Drawer {
     /// [`with_content_date`](Self::with_content_date) makes, so the two
     /// readings cannot drift apart by construction.
     pub fn live_time_mentions(&self) -> Vec<crate::temporal::TimeMention> {
+        self.live_time_mentions_in(crate::temporal::Locale::default())
+    }
+
+    /// As [`live_time_mentions`](Self::live_time_mentions), reading a given
+    /// language and week convention.
+    ///
+    /// Because the reading is live, **the locale is a read-time question.**
+    /// An Arabic corpus ingested while the engine was reading English carries
+    /// nothing useful in its sealed mentions — and gets the correct ones the
+    /// moment a reader asks in Arabic, with no re-ingest and no rewrite. That
+    /// is not a workaround for late configuration; it is the reason the
+    /// reading was moved to read time.
+    pub fn live_time_mentions_in(
+        &self,
+        locale: crate::temporal::Locale,
+    ) -> Vec<crate::temporal::TimeMention> {
         let anchor = self
             .meta
             .content_date
             .as_deref()
             .and_then(crate::temporal::parse_anchor);
-        crate::temporal::extract_time_mentions(&self.content, anchor)
+        crate::temporal::extract_time_mentions_in(&self.content, anchor, locale)
     }
 
     /// Whether this build reads the drawer's times differently from the

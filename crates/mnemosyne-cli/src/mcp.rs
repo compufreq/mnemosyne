@@ -172,7 +172,7 @@ fn tool_definitions() -> Value {
             json!({ "content": s("verbatim text"), "wing": s("person/project partition"), "room": s("topic"), "content_date": s("when the content happened, RFC 3339 or YYYY-MM-DD; anchors relative dates in the text") }),
             &["content"]),
         tool("mnemosyne_search", "Hybrid semantic + lexical search over stored memories.",
-            json!({ "query": s("search query"), "wing": s("scope to wing"), "room": s("scope to room"), "limit": i("max results"), "as_of": s("reference date (RFC 3339 or YYYY-MM-DD) — the engine reports how long before it each memory happened, exactly, instead of leaving you to work it out") }),
+            json!({ "query": s("search query"), "wing": s("scope to wing"), "room": s("scope to room"), "limit": i("max results"), "as_of": s("reference date (RFC 3339 or YYYY-MM-DD) — the engine reports how long before it each memory happened, exactly, instead of leaving you to work it out"), "language": s("language of the stored text: en (default) or ar. Arabic is a different grammar, not a word list — the past marker precedes the count and the dual is one word — and it reads Saturday-first weeks") }),
             &["query"]),
         tool("mnemosyne_wake_up", "Load session context: recent essential memories.",
             json!({ "wing": s("scope to wing") }), &[]),
@@ -294,6 +294,13 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
             // it does the calendar arithmetic — month lengths and leap years
             // are not a caller's problem, and least of all a language model's.
             let as_of = opt_str(args, "as_of").map(str::to_string);
+            // Which language the drawers' own text is read in. Read-time,
+            // because the reading is live: a corpus ingested while the engine
+            // read English is answered correctly in Arabic without a rewrite.
+            let locale = match opt_str(args, "language") {
+                Some("ar") | Some("arabic") => mnemosyne_core::temporal::Locale::ARABIC,
+                _ => mnemosyne_core::temporal::Locale::ENGLISH,
+            };
             let mut out = String::new();
             for (i, h) in hits.iter().enumerate() {
                 // Report when the content happened when we know it, not only
@@ -327,7 +334,7 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
                 // Times written inside the text, resolved against this
                 // drawer's own anchor and read live rather than from the seal.
                 let mentions = {
-                    let m = h.drawer.live_time_mentions();
+                    let m = h.drawer.live_time_mentions_in(locale);
                     let resolved: Vec<String> = m
                         .iter()
                         .filter_map(|x| {

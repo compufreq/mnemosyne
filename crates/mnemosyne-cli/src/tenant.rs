@@ -61,6 +61,30 @@ fn elapsed_phrase(content_date: &Option<String>, as_of: Option<&str>) -> Option<
     mnemosyne_core::temporal::describe_interval(a, d)
 }
 
+/// The locale a request asks its temporal text to be read in.
+///
+/// `language` selects a scanner — Arabic puts the past marker before the count
+/// and has a dual, so it is grammar rather than vocabulary — and `week_start`
+/// selects the week convention, which moves "last week" and every week count.
+/// Arabic defaults to Saturday weeks, the convention across most of the region,
+/// because getting the language right and leaving the week European produces
+/// answers that are subtly rather than obviously wrong.
+fn locale_from(body: &Value) -> mnemosyne_core::temporal::Locale {
+    use mnemosyne_core::temporal::{Locale, WeekStart};
+    let mut locale = match body.get("language").and_then(Value::as_str) {
+        Some("ar") | Some("arabic") => Locale::ARABIC,
+        _ => Locale::ENGLISH,
+    };
+    if let Some(ws) = body.get("week_start").and_then(Value::as_str) {
+        locale = locale.with_week_start(match ws {
+            "sunday" | "sun" => WeekStart::Sunday,
+            "saturday" | "sat" => WeekStart::Saturday,
+            _ => WeekStart::Monday,
+        });
+    }
+    locale
+}
+
 /// Triples as JSON, each labelled with where it rests.
 ///
 /// `grounding` is `stated` (the note's own words support it, at the recorded
@@ -550,6 +574,10 @@ impl Tenancy {
         // years are not a caller's problem, and certainly not a language
         // model's. Absent ⇒ no elapsed fields, nothing invented.
         let as_of = body.get("as_of").and_then(Value::as_str).map(String::from);
+        // Which language the drawers' own text should be read in. Read-time,
+        // because the reading is live — a corpus ingested under one locale is
+        // answered correctly under another without being rewritten.
+        let locale = locale_from(&body);
         let store = self.store_for(id)?;
         let hits = if store.is_external() {
             let v =
@@ -590,14 +618,15 @@ impl Tenancy {
                     // every improvement to the scanner retroactive across
                     // every existing vault — no migration, no re-ingest.
                     "time_mentions": mentions_with_elapsed(
-                        &h.drawer.live_time_mentions(),
+                        &h.drawer.live_time_mentions_in(locale),
                         as_of.as_deref(),
                     ),
                     // Present only when this build disagrees with the sealed
                     // reading: the drawer was written by an older
                     // understanding of the language. Not an error, and not
                     // something to resolve silently.
-                    "mentions_restated": h.drawer.time_mentions_differ()
+                    "mentions_restated": (h.drawer.live_time_mentions_in(locale)
+                        != h.drawer.meta.time_mentions)
                         .then_some(true),
                     "entities": h.drawer.meta.entities,
                     // Exact whole-day offsets from `as_of`, computed here

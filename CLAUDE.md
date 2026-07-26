@@ -22,9 +22,18 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   `calendar_weeks_between` (boundaries crossed, not days/7),
   `calendar_months_between`, `hours_between` on absolute instants,
   `describe_interval` (years counted on the calendar, never days/365),
-  `WeekStart::{Monday,Sunday}` since first-day-of-week is locale data and it
-  moves "last week"/"this Thursday" as well as the counts (`*_with`
-  variants throughout, incl. `extract_time_mentions_with`);
+  `WeekStart::{Monday,Sunday,Saturday}` since first-day-of-week is locale
+  data and it moves "last week"/"this Thursday" as well as the counts
+  (`*_with` variants throughout); `Locale{language,week_start}` +
+  `Language::{English,Arabic}` selects a **scanner, not a table** —
+  Arabic puts the past marker before the count (قبل ثلاثة أيام), has a
+  dual (يومين = two days as one word), puts period modifiers after the
+  noun (الأسبوع الماضي), reads both Gregorian month-name systems
+  (Levantine كانون الثاني + Roman يناير) and Arabic-Indic digits;
+  the locale is a **read-time** parameter (`live_time_mentions_in`,
+  `language` on `/v1/search` and `mnemosyne_search`) because the reading
+  is live, so a corpus ingested under one locale answers correctly under
+  another with no re-ingest;
   every shift is checked — hostile counts resolve to nothing, never a panic
   and never the unshifted anchor; local dates come from the offset the
   timestamp itself carries, never from

@@ -304,7 +304,7 @@ Write tools (marked **W**) are refused when the server runs `--read-only`.
 | Tool | W | Does |
 |---|---|---|
 | `mnemosyne_save` | W | save one memory verbatim |
-| `mnemosyne_search` | | hybrid semantic+lexical search. Pass `as_of` and each hit reports how long before it the content happened ("15 weeks before"), computed by the engine — do not subtract dates yourself. Hits also carry the dates written *inside* the text, resolved against that drawer's own anchor, and the further days the same text was recorded on |
+| `mnemosyne_search` | | hybrid semantic+lexical search. Pass `language: "ar"` to read the stored text as Arabic (Saturday-first weeks by default). Pass `as_of` and each hit reports how long before it the content happened ("15 weeks before"), computed by the engine — do not subtract dates yourself. Hits also carry the dates written *inside* the text, resolved against that drawer's own anchor, and the further days the same text was recorded on |
 | `mnemosyne_wake_up` | | recent essential memories for session start |
 | `mnemosyne_verify` | | verify HMACs + audit chain |
 | `mnemosyne_status` | | palace statistics |

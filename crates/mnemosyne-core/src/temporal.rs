@@ -271,13 +271,16 @@ pub fn hours_between(from: &str, to: &str) -> Option<i64> {
 /// week boundary, so it changes the answer to "how many weeks since".
 ///
 /// ISO 8601 says Monday, and that is the default. The United States, Canada,
-/// Japan and Israel count from Sunday, and a reader there is not wrong — so
-/// the convention is a parameter rather than a hardcoded assumption.
+/// Japan and Israel count from Sunday. Egypt, Saudi Arabia, the UAE and
+/// neighbours count from **Saturday**, because Friday is the holy day. None of
+/// those readers is wrong, so the convention is a parameter rather than a
+/// hardcoded assumption. CLDR is the authority every platform reads for this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WeekStart {
     #[default]
     Monday,
     Sunday,
+    Saturday,
 }
 
 impl WeekStart {
@@ -286,9 +289,59 @@ impl WeekStart {
         let from_monday = d.weekday().number_days_from_monday() as i64;
         match self {
             WeekStart::Monday => from_monday,
-            // Sunday is the day before Monday, so shift the cycle by one.
+            // Sunday is one day before Monday, Saturday two, so shift the
+            // cycle by that much and wrap.
             WeekStart::Sunday => (from_monday + 1) % 7,
+            WeekStart::Saturday => (from_monday + 2) % 7,
         }
+    }
+}
+
+/// Which language's temporal vocabulary and grammar to read, together with
+/// the week convention that goes with it.
+///
+/// Bundled rather than passed separately because they travel together: a
+/// caller reading Arabic almost always wants Saturday weeks, and getting one
+/// right while leaving the other at a European default produces answers that
+/// are subtly wrong rather than obviously wrong.
+///
+/// The language is **configured, not detected.** Detection would have to
+/// guess, and guessing costs more than it saves: matching every language's
+/// vocabulary at once makes French *mars* collide with English *Mars* and
+/// English *may* with a month in four languages. A caller knows its corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Locale {
+    pub language: Language,
+    pub week_start: WeekStart,
+}
+
+/// Languages whose temporal expressions this module can read.
+///
+/// Adding one is not a table swap. English puts the marker *after* the count
+/// ("three days ago") where Arabic puts it before ("قبل ثلاثة أيام"), and
+/// Arabic has a dual number — يومين is "two days" as one inflected word, not
+/// a numeral beside a plural. Grammar per language, not vocabulary per
+/// language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Language {
+    #[default]
+    English,
+    Arabic,
+}
+
+impl Locale {
+    pub const ENGLISH: Locale = Locale {
+        language: Language::English,
+        week_start: WeekStart::Monday,
+    };
+    /// Arabic with Saturday weeks — the convention across most of the region.
+    pub const ARABIC: Locale = Locale {
+        language: Language::Arabic,
+        week_start: WeekStart::Saturday,
+    };
+
+    pub fn with_week_start(self, week_start: WeekStart) -> Self {
+        Self { week_start, ..self }
     }
 }
 
@@ -541,6 +594,253 @@ fn month_name_is_deliberate(text: &str, off: usize) -> bool {
     !(before.is_empty() || before.ends_with(['.', '!', '?', '\n', '\r']))
 }
 
+// --- Arabic ---------------------------------------------------------------
+//
+// Sources for the vocabulary below: the two Gregorian month-name systems in
+// Arabic are the Levantine/Mashriqi set inherited from the Aramaic Babylonian
+// calendar (Iraq, Syria, Jordan, Lebanon, Palestine) and the Latin-derived set
+// used in Egypt, Sudan and the Gulf. Both are current, neither is a dialect of
+// the other, and a corpus can mix them — so both are matched.
+
+/// Arabic-Indic (U+0660..U+0669, ٠-٩) and Extended Arabic-Indic
+/// (U+06F0..U+06F9, ۰-۹, used for Persian and Urdu) digits rewritten as ASCII.
+///
+/// Returns `None` unless every character is a digit in one of the three sets,
+/// so this never half-converts a mixed token. Without it `"٣ أيام"` is
+/// invisible: `str::parse` accepts ASCII only, so a perfectly ordinary Arabic
+/// count silently fails to be a count.
+fn ascii_digits(tok: &str) -> Option<String> {
+    let mut out = String::with_capacity(tok.len());
+    for c in tok.chars() {
+        let d = match c {
+            '0'..='9' => c,
+            '\u{0660}'..='\u{0669}' => char::from(b'0' + (c as u32 - 0x0660) as u8),
+            '\u{06F0}'..='\u{06F9}' => char::from(b'0' + (c as u32 - 0x06F0) as u8),
+            _ => return None,
+        };
+        out.push(d);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A calendar unit named by a relative expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unit {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+/// Levantine / Mashriqi month names, from the Aramaic Babylonian calendar.
+const AR_MONTHS_LEVANT: [(&str, Month); 12] = [
+    ("كانون الثاني", Month::January),
+    ("شباط", Month::February),
+    ("آذار", Month::March),
+    ("نيسان", Month::April),
+    ("أيار", Month::May),
+    ("حزيران", Month::June),
+    ("تموز", Month::July),
+    ("آب", Month::August),
+    ("أيلول", Month::September),
+    ("تشرين الأول", Month::October),
+    ("تشرين الثاني", Month::November),
+    ("كانون الأول", Month::December),
+];
+
+/// Latin-derived month names, standard in Egypt, Sudan and the Gulf.
+const AR_MONTHS_ROMAN: [(&str, Month); 12] = [
+    ("يناير", Month::January),
+    ("فبراير", Month::February),
+    ("مارس", Month::March),
+    ("أبريل", Month::April),
+    ("مايو", Month::May),
+    ("يونيو", Month::June),
+    ("يوليو", Month::July),
+    ("أغسطس", Month::August),
+    ("سبتمبر", Month::September),
+    ("أكتوبر", Month::October),
+    ("نوفمبر", Month::November),
+    ("ديسمبر", Month::December),
+];
+
+const AR_WEEKDAYS: [(&str, Weekday); 7] = [
+    ("الاثنين", Weekday::Monday),
+    ("الثلاثاء", Weekday::Tuesday),
+    ("الأربعاء", Weekday::Wednesday),
+    ("الخميس", Weekday::Thursday),
+    ("الجمعة", Weekday::Friday),
+    ("السبت", Weekday::Saturday),
+    ("الأحد", Weekday::Sunday),
+];
+
+/// Counting words three to ten, in both genders. Arabic numerals agree in
+/// gender with the counted noun *inversely*, so both forms appear in ordinary
+/// text and both have to be read: ثلاثة أيام but ثلاث سنوات.
+const AR_NUMBERS: [(&str, i64); 18] = [
+    ("ثلاثة", 3),
+    ("ثلاث", 3),
+    ("أربعة", 4),
+    ("أربع", 4),
+    ("خمسة", 5),
+    ("خمس", 5),
+    ("ستة", 6),
+    ("ست", 6),
+    ("سبعة", 7),
+    ("سبع", 7),
+    ("ثمانية", 8),
+    ("ثماني", 8),
+    ("تسعة", 9),
+    ("تسع", 9),
+    ("عشرة", 10),
+    ("عشر", 10),
+    ("واحد", 1),
+    ("واحدة", 1),
+];
+
+/// Singular and plural unit nouns. `شهور` and `أشهر` are both plurals of
+/// شهر; `سنة` and `عام` are separate words for the same year.
+const AR_UNITS: [(&str, Unit); 16] = [
+    ("يوم", Unit::Day),
+    ("أيام", Unit::Day),
+    ("يوما", Unit::Day),
+    ("أسبوع", Unit::Week),
+    ("أسابيع", Unit::Week),
+    ("أسبوعا", Unit::Week),
+    ("شهر", Unit::Month),
+    ("أشهر", Unit::Month),
+    ("شهور", Unit::Month),
+    ("شهرا", Unit::Month),
+    ("سنة", Unit::Year),
+    ("سنوات", Unit::Year),
+    ("سنين", Unit::Year),
+    ("عام", Unit::Year),
+    ("أعوام", Unit::Year),
+    ("عاما", Unit::Year),
+];
+
+/// The dual: one inflected word meaning exactly two of something. Not a
+/// numeral beside a plural, which is why the count cannot be parsed out of it
+/// and the whole word has to be recognised.
+const AR_DUALS: [(&str, Unit); 6] = [
+    ("يومين", Unit::Day),
+    ("أسبوعين", Unit::Week),
+    ("شهرين", Unit::Month),
+    ("سنتين", Unit::Year),
+    ("عامين", Unit::Year),
+    ("يومان", Unit::Day),
+];
+
+/// Markers that put what follows in the past. Both are ordinary and both
+/// **precede** the count, which is the structural difference from English.
+const AR_AGO: [&str; 4] = ["قبل", "منذ", "مند", "من"];
+
+/// Modifiers that follow a unit noun: الأسبوع الماضي is "the week the past".
+const AR_PAST: [&str; 6] = [
+    "الماضي",
+    "الماضية",
+    "المنصرم",
+    "المنصرمة",
+    "الفائت",
+    "السابق",
+];
+const AR_NEXT: [&str; 6] = [
+    "القادم",
+    "القادمة",
+    "المقبل",
+    "المقبلة",
+    "التالي",
+    "التالية",
+];
+const AR_THIS: [&str; 4] = ["هذا", "هذه", "الحالي", "الجاري"];
+
+/// Strip the definite article, which attaches to the noun: الأسبوع is
+/// "the week". Only when something remains, so ال alone is untouched.
+fn ar_bare(w: &str) -> &str {
+    w.strip_prefix("ال").filter(|r| !r.is_empty()).unwrap_or(w)
+}
+
+fn ar_unit(w: &str) -> Option<Unit> {
+    let b = ar_bare(w);
+    AR_UNITS
+        .iter()
+        .find(|(n, _)| *n == b)
+        .map(|(_, u)| *u)
+        .or_else(|| AR_DUALS.iter().find(|(n, _)| *n == b).map(|(_, u)| *u))
+}
+
+fn ar_dual(w: &str) -> Option<Unit> {
+    AR_DUALS
+        .iter()
+        .find(|(n, _)| *n == ar_bare(w))
+        .map(|(_, u)| *u)
+}
+
+/// How far a period modifier moves its noun: الماضي back one, القادم forward
+/// one, هذا none. `None` when the word is not a modifier at all.
+///
+/// Kept separate because a unit noun only names a period when one of these
+/// follows it. اليوم is both "the day" and "today", and without this check the
+/// unit reading claims the token and then finds nothing to do with it — which
+/// is exactly how "today" went missing.
+fn ar_period_step(w: &str) -> Option<i64> {
+    if AR_PAST.contains(&w) {
+        Some(-1)
+    } else if AR_NEXT.contains(&w) {
+        Some(1)
+    } else if AR_THIS.contains(&w) {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+fn ar_count(w: &str) -> Option<i64> {
+    if let Some(d) = ascii_digits(w) {
+        return d.parse::<i64>().ok().filter(|n| *n > 0);
+    }
+    AR_NUMBERS
+        .iter()
+        .find(|(n, _)| *n == ar_bare(w))
+        .map(|(_, v)| *v)
+}
+
+fn ar_month(w: &str) -> Option<Month> {
+    AR_MONTHS_ROMAN
+        .iter()
+        .chain(AR_MONTHS_LEVANT.iter())
+        .find(|(n, _)| *n == w)
+        .map(|(_, m)| *m)
+}
+
+fn ar_weekday(w: &str) -> Option<Weekday> {
+    let with_article = format!("ال{}", ar_bare(w));
+    AR_WEEKDAYS
+        .iter()
+        .find(|(n, _)| *n == w || *n == with_article)
+        .map(|(_, d)| *d)
+}
+
+/// Shift `a` backwards or forwards by `n` of `unit`, returning the period the
+/// expression names. A displaced day stays a day; a named calendar period
+/// stays a period.
+fn shift_unit(a: Date, unit: Unit, n: i64, ws: WeekStart, period: bool) -> Option<(Date, Date)> {
+    match unit {
+        Unit::Day => shift_days(a, n).map(point),
+        Unit::Week if period => {
+            shift_days(week_start_of(a, ws)?, 7 * n).and_then(|d| week_range(d, ws))
+        }
+        Unit::Week => n.checked_mul(7).and_then(|d| shift_days(a, d)).map(point),
+        Unit::Month if period => shift_months(a, n).and_then(month_range),
+        Unit::Month => shift_months(a, n).map(point),
+        Unit::Year if period => shift_months(a, 12 * n).and_then(year_range),
+        Unit::Year => n
+            .checked_mul(12)
+            .and_then(|m| shift_months(a, m))
+            .map(point),
+    }
+}
+
 /// Resolve a span that some *other* component claims dates something in
 /// `text` — an extraction model reading the note, most usefully.
 ///
@@ -645,6 +945,202 @@ pub fn extract_time_mentions_with(
     anchor: Option<Date>,
     ws: WeekStart,
 ) -> Vec<TimeMention> {
+    extract_time_mentions_in(text, anchor, Locale::ENGLISH.with_week_start(ws))
+}
+
+/// As [`extract_time_mentions`], in a given language and week convention.
+///
+/// The language selects a scanner, not a table: see [`Language`].
+pub fn extract_time_mentions_in(
+    text: &str,
+    anchor: Option<Date>,
+    locale: Locale,
+) -> Vec<TimeMention> {
+    match locale.language {
+        Language::English => scan_english(text, anchor, locale.week_start),
+        Language::Arabic => scan_arabic(text, anchor, locale.week_start),
+    }
+}
+
+/// Read Arabic temporal expressions.
+///
+/// A separate scanner rather than the English one with different words,
+/// because the grammar differs in three ways that the English patterns cannot
+/// express:
+///
+/// * the past marker **precedes** the count — قبل ثلاثة أيام, not "three days
+///   قبل";
+/// * the **dual** is one word — قبل يومين is "two days ago" in two tokens, and
+///   there is no numeral to read;
+/// * a period modifier **follows** its noun — الأسبوع الماضي is "the week the
+///   past", the reverse of "last week".
+///
+/// Tokens are compared in canonical form, so أ written as one code point or as
+/// alef plus a combining hamza both match. Offsets stay relative to the
+/// original text.
+fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMention> {
+    let raw = tokens(text);
+    // Compare canonically; report offsets from the untouched text.
+    let toks: Vec<(usize, String)> = raw
+        .iter()
+        .map(|(o, w)| (*o, crate::normalize::match_key(w).into_owned()))
+        .collect();
+    let mut out: Vec<TimeMention> = Vec::new();
+    let mut i = 0usize;
+
+    let span = |from: usize, to_tok: usize| -> String {
+        let end = toks
+            .get(to_tok)
+            .map(|(o, w)| o + w.len())
+            .unwrap_or(text.len());
+        text[from..end.min(text.len())].to_string()
+    };
+    let at = |k: usize| -> &str { toks.get(k).map(|(_, w)| w.as_str()).unwrap_or("") };
+
+    while i < toks.len() {
+        let (off, ref w) = toks[i];
+        let mut consumed = 0usize;
+        let mut mention: Option<(TimeKind, Option<(Date, Date)>)> = None;
+
+        // Language-neutral numeric forms first — a date written 2023-05-07 is
+        // the same date in any prose around it.
+        if let Some(d) = iso_token(w) {
+            mention = Some((TimeKind::Absolute, Some(point(d))));
+        } else if let Some(resolved) = dmy_token(w) {
+            mention = Some((TimeKind::Absolute, resolved.map(point)));
+        } else if let Some(month) = ar_month(w).or_else(|| {
+            // Two-word Levantine names: كانون الثاني, تشرين الأول.
+            ar_month(&format!("{w} {}", at(i + 1)))
+        }) {
+            // Either the bare name matched or the two-word form did.
+            let two_word = ar_month(w).is_none();
+            let base = if two_word { i + 1 } else { i };
+            let year_tok = at(base + 1);
+            let year = ascii_digits(year_tok)
+                .and_then(|d| d.parse::<i32>().ok())
+                .filter(|y| (1000..=9999).contains(y));
+            // A day may precede the month: ٧ مايو ٢٠١٩.
+            let day_before = (i > 0)
+                .then(|| ascii_digits(at(i - 1)))
+                .flatten()
+                .and_then(|d| d.parse::<u8>().ok())
+                .filter(|d| (1..=31).contains(d));
+            consumed = (base - i) + usize::from(year.is_some());
+            let period = match (day_before, year) {
+                (Some(d), Some(y)) => Date::from_calendar_date(y, month, d).ok().map(point),
+                // A month and year name the month, not its first morning.
+                (None, Some(y)) => Date::from_calendar_date(y, month, 1)
+                    .ok()
+                    .and_then(month_range),
+                _ => None,
+            };
+            if let (Some(d), true) = (day_before, period.is_some()) {
+                // Absorb the preceding day into the recorded span.
+                let _ = d;
+                let start = raw[i - 1].0;
+                out.push(TimeMention {
+                    text: span(start, i + consumed),
+                    kind: TimeKind::Absolute,
+                    resolved: period.map(|(s, _)| fmt(s)),
+                    resolved_end: None,
+                    offset: start as u32,
+                });
+                i += consumed + 1;
+                continue;
+            }
+            mention = Some((TimeKind::Absolute, period));
+        } else if AR_AGO.contains(&w.as_str()) {
+            // قبل / منذ + (dual | count + unit)
+            if let Some(unit) = ar_dual(at(i + 1)) {
+                consumed = 1;
+                mention = Some((
+                    TimeKind::Relative,
+                    anchor.and_then(|a| shift_unit(a, unit, -2, ws, false)),
+                ));
+            } else if let (Some(n), Some(unit)) = (ar_count(at(i + 1)), ar_unit(at(i + 2))) {
+                consumed = 2;
+                mention = Some((
+                    TimeKind::Relative,
+                    anchor.and_then(|a| shift_unit(a, unit, -n, ws, false)),
+                ));
+            } else if let Some(unit) = ar_unit(at(i + 1)) {
+                // قبل شهر — "a month ago", the count implied as one.
+                consumed = 1;
+                mention = Some((
+                    TimeKind::Relative,
+                    anchor.and_then(|a| shift_unit(a, unit, -1, ws, false)),
+                ));
+            }
+        } else if AR_THIS.contains(&w.as_str()) {
+            // هذا الأسبوع — the marker precedes here.
+            if let Some(unit) = ar_unit(at(i + 1)) {
+                consumed = 1;
+                mention = Some((
+                    TimeKind::Relative,
+                    anchor.and_then(|a| shift_unit(a, unit, 0, ws, true)),
+                ));
+            }
+        } else if let Some((unit, step)) =
+            // الأسبوع الماضي / الشهر القادم — the modifier follows the noun,
+            // and a unit only names a period when one actually does. Requiring
+            // it here is what leaves اليوم free to mean "today" below.
+            ar_unit(w).and_then(|u| ar_period_step(at(i + 1)).map(|s| (u, s)))
+        {
+            consumed = 1;
+            mention = Some((
+                TimeKind::Relative,
+                anchor.and_then(|a| shift_unit(a, unit, step, ws, true)),
+            ));
+        } else if let Some((wd, step)) =
+            // السبت الماضي / الخميس القادم — a named day, so a point.
+            ar_weekday(w).and_then(|d| ar_period_step(at(i + 1)).map(|s| (d, s)))
+        {
+            consumed = 1;
+            let resolved = anchor.and_then(|a| match step {
+                -1 => previous_weekday(a, wd),
+                0 => weekday_in_week(a, wd, ws),
+                _ => next_weekday(a, wd),
+            });
+            mention = Some((TimeKind::Relative, resolved.map(point)));
+        } else {
+            let days = match w.as_str() {
+                "أمس" | "امس" | "البارحة" | "امبارح" | "مبارح" => Some(-1),
+                "اليوم" => Some(0),
+                "غدا" | "غدًا" | "الغد" | "بكرة" | "بكره" => Some(1),
+                _ => None,
+            };
+            if let Some(d) = days {
+                mention = Some((
+                    TimeKind::Relative,
+                    anchor.and_then(|a| shift_days(a, d)).map(point),
+                ));
+            }
+        }
+
+        if let Some((kind, period)) = mention {
+            let (start, end) = match period {
+                Some((s, e)) => (Some(fmt(s)), Some(fmt(e))),
+                None => (None, None),
+            };
+            out.push(TimeMention {
+                text: span(off, i + consumed),
+                kind,
+                resolved_end: match (&start, &end) {
+                    (Some(s), Some(e)) if s != e => end,
+                    _ => None,
+                },
+                resolved: start,
+                offset: off as u32,
+            });
+            i += consumed + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn scan_english(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMention> {
     let toks = tokens(text);
     let mut out: Vec<TimeMention> = Vec::new();
     let mut i = 0usize;
@@ -910,6 +1406,228 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].kind, TimeKind::Absolute);
         assert!(m[0].resolved.is_none());
+    }
+
+    // ---- Arabic ----------------------------------------------------------
+
+    /// 2023-05-08 is a Monday. Under Saturday-first weeks — the convention
+    /// across Egypt, Saudi Arabia and the UAE — its week runs Sat 6 to Fri 12.
+    fn ar(text: &str) -> Vec<TimeMention> {
+        extract_time_mentions_in(text, parse_anchor("2023-05-08"), Locale::ARABIC)
+    }
+
+    #[test]
+    fn arabic_indic_digits_are_digits() {
+        assert_eq!(ascii_digits("٣").as_deref(), Some("3"));
+        assert_eq!(ascii_digits("٢٠٢٣").as_deref(), Some("2023"));
+        // Extended Arabic-Indic, used for Persian and Urdu.
+        assert_eq!(ascii_digits("۱۴۴۵").as_deref(), Some("1445"));
+        assert_eq!(ascii_digits("2023").as_deref(), Some("2023"));
+        // Never half-converts a mixed token.
+        assert_eq!(ascii_digits("٣أيام"), None);
+        assert_eq!(ascii_digits("أيام"), None);
+        assert_eq!(ascii_digits(""), None);
+    }
+
+    /// The marker precedes the count, which is the pattern English cannot
+    /// express: "قبل ثلاثة أيام" is three days ago.
+    #[test]
+    fn the_past_marker_precedes_the_count() {
+        for text in ["قبل ثلاثة أيام", "منذ ثلاثة أيام", "قبل ٣ أيام"]
+        {
+            let m = ar(text);
+            assert_eq!(m.len(), 1, "{text} -> {m:?}");
+            assert_eq!(m[0].resolved.as_deref(), Some("2023-05-05"), "{text}");
+        }
+    }
+
+    /// Numerals agree in gender inversely with the counted noun, so both
+    /// forms occur in ordinary prose and both must read.
+    #[test]
+    fn both_genders_of_a_numeral_count() {
+        assert_eq!(
+            ar("قبل ثلاث سنوات")[0].resolved.as_deref(),
+            Some("2020-05-08")
+        );
+        assert_eq!(
+            ar("قبل ثلاثة أشهر")[0].resolved.as_deref(),
+            Some("2023-02-08")
+        );
+    }
+
+    /// The dual is one inflected word meaning exactly two — there is no
+    /// numeral in "قبل يومين" to parse out.
+    #[test]
+    fn the_dual_means_two_without_a_numeral() {
+        assert_eq!(ar("قبل يومين")[0].resolved.as_deref(), Some("2023-05-06"));
+        assert_eq!(ar("قبل أسبوعين")[0].resolved.as_deref(), Some("2023-04-24"));
+        assert_eq!(ar("منذ شهرين")[0].resolved.as_deref(), Some("2023-03-08"));
+        assert_eq!(ar("قبل سنتين")[0].resolved.as_deref(), Some("2021-05-08"));
+        assert_eq!(ar("منذ عامين")[0].resolved.as_deref(), Some("2021-05-08"));
+    }
+
+    #[test]
+    fn a_bare_unit_after_the_marker_counts_as_one() {
+        assert_eq!(ar("قبل شهر")[0].resolved.as_deref(), Some("2023-04-08"));
+        assert_eq!(ar("قبل يوم")[0].resolved.as_deref(), Some("2023-05-07"));
+    }
+
+    #[test]
+    fn relative_days() {
+        for (text, want) in [
+            ("أمس", "2023-05-07"),
+            ("البارحة", "2023-05-07"),
+            ("اليوم", "2023-05-08"),
+            ("غدا", "2023-05-09"),
+            ("الغد", "2023-05-09"),
+        ] {
+            let m = ar(text);
+            assert_eq!(m.len(), 1, "{text} -> {m:?}");
+            assert_eq!(m[0].resolved.as_deref(), Some(want), "{text}");
+        }
+    }
+
+    /// A period modifier follows its noun — الأسبوع الماضي is "the week the
+    /// past" — and it names a period, not a day seven back.
+    #[test]
+    fn the_modifier_follows_the_noun_and_names_a_period() {
+        // Saturday-first: the anchor's week is May 6..12, so the one before
+        // it is April 29 .. May 5.
+        let m = ar("الأسبوع الماضي");
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].range(), Some(("2023-04-29", "2023-05-05")));
+        assert!(m[0].is_period());
+
+        assert_eq!(
+            ar("الشهر الماضي")[0].range(),
+            Some(("2023-04-01", "2023-04-30"))
+        );
+        assert_eq!(
+            ar("السنة الماضية")[0].range(),
+            Some(("2022-01-01", "2022-12-31"))
+        );
+        assert_eq!(
+            ar("الشهر القادم")[0].range(),
+            Some(("2023-06-01", "2023-06-30"))
+        );
+    }
+
+    #[test]
+    fn this_precedes_its_noun() {
+        assert_eq!(
+            ar("هذا الأسبوع")[0].range(),
+            Some(("2023-05-06", "2023-05-12")),
+            "Saturday-first week containing Monday the 8th"
+        );
+        assert_eq!(
+            ar("هذا الشهر")[0].range(),
+            Some(("2023-05-01", "2023-05-31"))
+        );
+    }
+
+    #[test]
+    fn week_start_moves_the_arabic_week_too() {
+        let iso = extract_time_mentions_in(
+            "الأسبوع الماضي",
+            parse_anchor("2023-05-08"),
+            Locale::ARABIC.with_week_start(WeekStart::Monday),
+        );
+        // Monday-first: the previous week is May 1..7, not April 29..May 5.
+        assert_eq!(iso[0].range(), Some(("2023-05-01", "2023-05-07")));
+    }
+
+    /// Both month-name systems are current and a corpus can mix them.
+    #[test]
+    fn both_month_systems_resolve() {
+        // Latin-derived, standard in Egypt and the Gulf.
+        assert_eq!(ar("٧ مايو ٢٠١٩")[0].resolved.as_deref(), Some("2019-05-07"));
+        // Levantine, from the Aramaic Babylonian calendar — two words.
+        assert_eq!(ar("٧ أيار ٢٠١٩")[0].resolved.as_deref(), Some("2019-05-07"));
+        assert_eq!(
+            ar("٧ كانون الثاني ٢٠٢٠")[0].resolved.as_deref(),
+            Some("2020-01-07")
+        );
+        assert_eq!(
+            ar("١٥ تشرين الأول ٢٠٢١")[0].resolved.as_deref(),
+            Some("2021-10-15")
+        );
+    }
+
+    /// A month with a year names the month, exactly as in English.
+    #[test]
+    fn an_arabic_month_and_year_is_a_period() {
+        let m = ar("في مايو ٢٠٢٣");
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].range(), Some(("2023-05-01", "2023-05-31")));
+    }
+
+    #[test]
+    fn arabic_weekdays_resolve_against_the_anchor() {
+        // Anchor Monday 2023-05-08.
+        assert_eq!(
+            ar("الخميس الماضي")[0].resolved.as_deref(),
+            Some("2023-05-04")
+        );
+        assert_eq!(
+            ar("الخميس القادم")[0].resolved.as_deref(),
+            Some("2023-05-11")
+        );
+    }
+
+    /// Canonically equivalent spellings must read the same: أ is one code
+    /// point or alef plus a combining hamza.
+    #[test]
+    fn arabic_reads_either_encoding_of_the_same_word() {
+        let composed = ar("الأسبوع الماضي");
+        let decomposed = ar("ال\u{0627}\u{0654}سبوع الماضي");
+        assert_eq!(composed.len(), 1);
+        assert_eq!(decomposed.len(), 1, "{decomposed:?}");
+        assert_eq!(composed[0].resolved, decomposed[0].resolved);
+    }
+
+    #[test]
+    fn arabic_still_reads_iso_dates() {
+        assert_eq!(
+            ar("اجتمعنا في 2023-05-07")[0].resolved.as_deref(),
+            Some("2023-05-07")
+        );
+    }
+
+    #[test]
+    fn arabic_without_an_anchor_records_but_does_not_guess() {
+        let m = extract_time_mentions_in("قبل ثلاثة أيام", None, Locale::ARABIC);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].resolved.is_none(), "no anchor, no date");
+    }
+
+    #[test]
+    fn ordinary_arabic_prose_yields_nothing() {
+        let m = ar("كان الاجتماع مفيدا وناقشنا الخطة");
+        assert!(m.is_empty(), "{m:?}");
+    }
+
+    /// The English scanner must not have moved, and must not read Arabic.
+    #[test]
+    fn the_locales_stay_independent() {
+        let en = extract_time_mentions("three days ago", parse_anchor("2023-05-08"));
+        assert_eq!(en[0].resolved.as_deref(), Some("2023-05-05"));
+        let en_on_arabic = extract_time_mentions("قبل ثلاثة أيام", parse_anchor("2023-05-08"));
+        assert!(en_on_arabic.is_empty(), "{en_on_arabic:?}");
+        assert_eq!(Locale::default(), Locale::ENGLISH);
+    }
+
+    #[test]
+    fn saturday_weeks_count_boundaries_correctly() {
+        // 2023-05-05 is a Friday, 2023-05-06 a Saturday: a boundary under
+        // Saturday-first weeks, none under Monday-first.
+        assert_eq!(
+            calendar_weeks_between_with("2023-05-05", "2023-05-06", WeekStart::Saturday),
+            Some(1)
+        );
+        assert_eq!(
+            calendar_weeks_between_with("2023-05-05", "2023-05-06", WeekStart::Monday),
+            Some(0)
+        );
     }
 
     // ---- a claim is checked, not believed --------------------------------
