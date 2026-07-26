@@ -172,7 +172,10 @@ Two options worth knowing:
   save and search — your product's embedding model, mnemosyne's sealing
   and integrity. Dimension is enforced exactly.
 - **Dedup-refresh**: pass `"dedup_threshold":0.9` on save to refresh a
-  near-duplicate in place (audited update) instead of piling up copies.
+  near-duplicate in place (audited update) instead of piling up copies. The
+  refreshed drawer takes the incoming text and date, and keeps the one it
+  displaced in `occurrences`, so collapsing a repeat never erases the day it
+  first appeared. Search hits carry the full chronology.
 
 Export lines carry vectors and ColBERT token artifacts, so
 export→import is a **lossless migration primitive** — restore is a copy,
@@ -312,7 +315,7 @@ Write tools (marked **W**) are refused when the server runs `--read-only`.
 | `mnemosyne_kg_query` / `_kg_timeline` / `_kg_stats` | | query facts (incl. `--as-of`) |
 | `mnemosyne_diary_write` | W | per-agent diary entry |
 | `mnemosyne_diary_read` / `_list_agents` | | read diaries |
-| `mnemosyne_dedup` | W | report/remove exact duplicates |
+| `mnemosyne_dedup` | W | report/remove exact duplicates. Collapses the *text* only — the days each copy was recorded on are folded onto the survivor's `occurrences` before its row goes, and the report's `dates_kept` counts them. The same words on two different days are two things that happened |
 
 ## 9. Reference — HTTP surface
 

@@ -573,6 +573,12 @@ impl Tenancy {
                     // text; null when the writer did not know it.
                     "content_date": h.drawer.meta.content_date,
                     "filed_at": h.drawer.meta.filed_at,
+                    // Every day this same text is known to have been recorded,
+                    // earliest first. More than one entry means dedup collapsed
+                    // identical wording written on different days — the text is
+                    // one record, the chronology is all of them.
+                    "occurrences": serde_json::to_value(h.drawer.all_occurrences())
+                        .unwrap_or_else(|_| json!([])),
                     // Dates written inside the text, already resolved against
                     // the drawer's own anchor at write time. Returned so a
                     // reader never has to re-derive what we computed exactly —

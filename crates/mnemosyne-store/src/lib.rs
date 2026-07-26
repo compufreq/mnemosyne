@@ -1175,11 +1175,18 @@ impl PalaceStore {
         if let Some((match_id, _)) = best {
             // Refresh the matched drawer in place: keep its id, take the
             // incoming content/metadata and a fresh recency.
-            let refreshed = Drawer {
+            let mut refreshed = Drawer {
                 id: match_id.clone(),
                 content: drawer.content.clone(),
                 meta: drawer.meta.clone(),
             };
+            // Taking the incoming metadata wholesale used to discard the
+            // matched drawer's dates with it: the same text recorded on an
+            // earlier day simply stopped having happened. The text collapses,
+            // the chronology does not.
+            if let Some(existing) = self.get(&match_id)? {
+                refreshed.absorb_occurrences_of(&existing);
+            }
             self.write_drawer(&refreshed, embedding)?;
             mnemosyne_obs::drawer_write(mnemosyne_obs::WriteOutcome::Deduped);
             mnemosyne_obs::event_drawer_saved(

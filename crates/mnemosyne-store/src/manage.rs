@@ -42,6 +42,10 @@ pub struct DedupReport {
     pub duplicate_groups: u64,
     pub removed: Vec<String>,
     pub applied: bool,
+    /// How many distinct appearance dates were carried onto survivors rather
+    /// than deleted with their rows. Reported because it is the difference
+    /// between collapsing text and losing history.
+    pub dates_kept: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -340,7 +344,15 @@ impl PalaceStore {
     }
 
     /// Find exact-duplicate drawers (same keyed fingerprint). With `apply`,
-    /// keep the earliest of each group and delete the rest.
+    /// keep the earliest of each group and delete the rest — **carrying every
+    /// deleted record's dates onto the survivor first**.
+    ///
+    /// The fingerprint covers content only, so a group is "the same words",
+    /// not "the same event". The same words written on two different days are
+    /// two things that happened, and deleting one used to destroy a date
+    /// nothing could recover. Collapsing the *text* is right — it is the same
+    /// text — but the chronology of when it appeared is data, so it moves to
+    /// the survivor's `occurrences` before the row goes.
     pub fn dedup(&mut self, apply: bool) -> Result<DedupReport, StoreError> {
         let groups: Vec<(Vec<u8>, i64)> = self
             .conn
@@ -351,23 +363,47 @@ impl PalaceStore {
             .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<Result<_, _>>()?;
         let mut removed = Vec::new();
+        let mut dates_kept = 0u64;
         for (fp, _) in &groups {
             let ids: Vec<String> = self
                 .conn
                 .prepare("SELECT id FROM drawers WHERE fp = ?1 ORDER BY seq")?
                 .query_map(params![fp], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
-            for id in ids.into_iter().skip(1) {
-                if apply {
-                    self.delete_drawer(&id)?;
+            let Some((keep_id, drop_ids)) = ids.split_first() else {
+                continue;
+            };
+            // Gather first, so a report without `apply` still says truthfully
+            // how many appearances the survivor would end up holding.
+            let mut survivor = self.get(keep_id)?;
+            let before = survivor.as_ref().map(|d| d.all_occurrences().len());
+            for id in drop_ids {
+                if let (Some(keep), Some(gone)) = (survivor.as_mut(), self.get(id)?) {
+                    keep.absorb_occurrences_of(&gone);
                 }
-                removed.push(id);
+                removed.push(id.clone());
+            }
+            if let (Some(keep), Some(before)) = (survivor.as_ref(), before) {
+                let gained = keep.all_occurrences().len().saturating_sub(before);
+                dates_kept += gained as u64;
+                if apply && gained > 0 {
+                    // Rewrite the survivor before removing the rows it now
+                    // speaks for, so a crash between the two leaves the dates
+                    // recorded rather than lost.
+                    self.upsert(keep)?;
+                }
+            }
+            if apply {
+                for id in drop_ids {
+                    self.delete_drawer(id)?;
+                }
             }
         }
         Ok(DedupReport {
             duplicate_groups: groups.len() as u64,
             removed,
             applied: apply,
+            dates_kept,
         })
     }
 
@@ -728,6 +764,74 @@ mod tests {
         assert!(s.get(&dr.id).unwrap().is_none());
         // Deletion is chained — verify still passes.
         assert!(s.verify().unwrap().ok());
+    }
+
+    /// The sweep deletes rows. Before this, it deleted their dates with
+    /// them: the same words recorded on two days became one record and the
+    /// second day stopped having happened, unrecoverably. The text is one
+    /// record; the chronology is all of them.
+    #[test]
+    fn dedup_collapses_the_text_and_keeps_every_date() {
+        let (_d, mut s) = store();
+        let first =
+            drawer("w", "r", "the standup notes", 0).with_content_date(Some("2023-04-10".into()));
+        let later =
+            drawer("w", "r2", "the standup notes", 0).with_content_date(Some("2023-06-26".into()));
+        s.upsert(&first).unwrap();
+        s.upsert(&later).unwrap();
+
+        let report = s.dedup(true).unwrap();
+        assert_eq!(report.removed.len(), 1, "one row collapses");
+        assert_eq!(report.dates_kept, 1, "and its date is carried, not dropped");
+
+        let kept = s.get(&first.id).unwrap().unwrap();
+        let days: Vec<_> = kept
+            .all_occurrences()
+            .into_iter()
+            .filter_map(|o| o.content_date)
+            .collect();
+        assert_eq!(days, ["2023-04-10", "2023-06-26"]);
+        assert!(
+            s.get(&later.id).unwrap().is_none(),
+            "the duplicate row is gone"
+        );
+        assert!(s.verify().unwrap().ok(), "chain and HMACs still verify");
+    }
+
+    /// A dry run must report the same history it would preserve, or the
+    /// preview is not a preview of what happens.
+    #[test]
+    fn a_dry_run_reports_the_dates_it_would_keep_and_deletes_nothing() {
+        let (_d, mut s) = store();
+        let a = drawer("w", "r", "same words", 0).with_content_date(Some("2023-01-01".into()));
+        let b = drawer("w", "r2", "same words", 0).with_content_date(Some("2023-02-02".into()));
+        s.upsert(&a).unwrap();
+        s.upsert(&b).unwrap();
+
+        let report = s.dedup(false).unwrap();
+        assert!(!report.applied);
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.dates_kept, 1);
+        assert!(s.get(&b.id).unwrap().is_some(), "dry run deletes nothing");
+        assert!(
+            s.get(&a.id).unwrap().unwrap().meta.occurrences.is_empty(),
+            "and writes nothing"
+        );
+    }
+
+    /// Same words, same day, filed twice is one appearance — otherwise
+    /// re-ingesting a corpus inflates its history every run.
+    #[test]
+    fn dedup_of_the_same_day_records_no_extra_appearance() {
+        let (_d, mut s) = store();
+        let a = drawer("w", "r", "same words", 0).with_content_date(Some("2023-01-01".into()));
+        let b = drawer("w", "r2", "same words", 0).with_content_date(Some("2023-01-01".into()));
+        s.upsert(&a).unwrap();
+        s.upsert(&b).unwrap();
+        let report = s.dedup(true).unwrap();
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.dates_kept, 0, "nothing new happened");
+        assert_eq!(s.get(&a.id).unwrap().unwrap().all_occurrences().len(), 1);
     }
 
     #[test]

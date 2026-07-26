@@ -2,6 +2,24 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **Deduplication collapses the text and keeps every date.** The content
+  fingerprint covers content only, so `dedup --apply` grouped byte-identical
+  drawers vault-wide and deleted all but the first — and the same words
+  written on two different days are two things that happened, so a date was
+  destroyed with each deleted row, unrecoverably. `save_with_dedup` had the
+  same blindness from the other side: it took the incoming metadata wholesale,
+  so the survivor adopted the newer date and the earlier appearance silently
+  stopped existing. Found while explaining why 5 of 500 measured contexts
+  carried the same passage twice — the answer was that the corpus records it
+  on two different days, which is exactly the case that was being erased.
+  `DrawerMeta` gains `occurrences`: the further days this same content was
+  recorded, folded onto the survivor before the duplicate row goes.
+  `Drawer::all_occurrences()` returns the full chronology including the
+  drawer's own, earliest first; appearances are deduplicated by
+  `content_date`, so re-ingesting a corpus five times is one appearance filed
+  five ways rather than five appearances. The sweep reports `dates_kept`, and
+  a dry run reports the same number it would preserve. Empty serializes to
+  nothing, so every existing row keeps its bytes and keeps verifying.
 - **The reading of a drawer's times is live; the seal is the record.**
   `time_mentions` was computed once in `Drawer::new` and sealed, which froze
   it at whatever the writing binary understood — a drawer written before

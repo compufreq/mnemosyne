@@ -3,11 +3,29 @@
 //! Field names mirror mempalace's drawer metadata (`_build_drawer_metadata`
 //! in miner.py) so exported palaces remain recognizable: wing, room,
 //! source_file, chunk_index, added_by, filed_at, normalize_version,
-//! id_recipe, line_start/line_end, content_date, hall, entities.
+//! id_recipe, line_start/line_end, content_date, hall, entities. `occurrences`
+//! is ours: dedup collapses identical text, and the days that text appeared on
+//! survive the collapse.
 
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+/// One time this exact content was recorded.
+///
+/// The same words written on two different days are two events, not one
+/// record and one mistake. Collapsing the text is fine — it is the same text
+/// — but the *when* of each appearance is data, and losing it would undo the
+/// thing `content_date` exists to establish.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Occurrence {
+    /// When the content happened, if the writer knew. Ordered first so a
+    /// sort over occurrences is chronological by the date that matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_date: Option<String>,
+    /// When this appearance was filed.
+    pub filed_at: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DrawerMeta {
@@ -36,6 +54,19 @@ pub struct DrawerMeta {
     pub hall: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<String>,
+    /// **Further** times this same content was recorded, beyond the drawer's
+    /// own `content_date`/`filed_at`.
+    ///
+    /// Populated only by deduplication: when identical text is collapsed, the
+    /// text goes but the dates stay, so the record keeps the chronology of
+    /// when it appeared. Empty for a drawer seen once, which is almost all of
+    /// them — and empty serializes to nothing, so existing rows stay
+    /// byte-identical and keep verifying.
+    ///
+    /// Use [`Drawer::all_occurrences`] to read the complete history; this
+    /// field alone omits the first one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occurrences: Vec<Occurrence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -89,8 +120,44 @@ impl Drawer {
                 time_mentions,
                 hall: None,
                 entities,
+                occurrences: Vec::new(),
             },
         }
+    }
+
+    /// Every time this content is known to have been recorded, earliest
+    /// first: the drawer's own appearance plus any folded in by dedup.
+    ///
+    /// Always at least one entry, so a caller never has to special-case the
+    /// ordinary drawer that was seen exactly once.
+    pub fn all_occurrences(&self) -> Vec<Occurrence> {
+        let mut out = Vec::with_capacity(self.meta.occurrences.len() + 1);
+        out.push(Occurrence {
+            content_date: self.meta.content_date.clone(),
+            filed_at: self.meta.filed_at.clone(),
+        });
+        out.extend(self.meta.occurrences.iter().cloned());
+        // Undated appearances sort first; `Option::None` orders below `Some`.
+        out.sort();
+        out.dedup_by(|a, b| a.content_date == b.content_date);
+        out
+    }
+
+    /// Record that this same content was also seen as `other`, keeping the
+    /// dates that collapsing the text would otherwise destroy.
+    ///
+    /// Deduplicated by `content_date`: re-ingesting the same corpus five
+    /// times is one appearance filed five ways, not five appearances. A
+    /// genuinely different day is a genuinely different entry.
+    pub fn absorb_occurrences_of(&mut self, other: &Drawer) {
+        let mut merged = self.all_occurrences();
+        merged.extend(other.all_occurrences());
+        merged.sort();
+        merged.dedup_by(|a, b| a.content_date == b.content_date);
+        // The drawer's own appearance stays in `content_date`/`filed_at`;
+        // this field carries only the rest.
+        merged.retain(|o| o.content_date != self.meta.content_date);
+        self.meta.occurrences = merged;
     }
 
     /// Record when the *content* happened, as distinct from `filed_at`,
@@ -177,6 +244,95 @@ mod tests {
         let a = Drawer::new("w", "r", "one".into(), Some("f.md".into()), 0, "test");
         let b = Drawer::new("w", "r", "two".into(), Some("f.md".into()), 0, "test");
         assert_eq!(a.id, b.id); // same slot => same id (idempotent re-mine)
+    }
+
+    // ---- collapsing text must not collapse chronology --------------------
+
+    fn dated(text: &str, date: &str) -> Drawer {
+        Drawer::new("w", "r", text.into(), None, 0, "test").with_content_date(Some(date.into()))
+    }
+
+    /// A drawer seen once still answers the question, so no caller has to
+    /// special-case the ordinary drawer.
+    #[test]
+    fn a_drawer_seen_once_has_one_occurrence() {
+        let d = dated("the standup notes", "2023-05-08");
+        let all = d.all_occurrences();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].content_date.as_deref(), Some("2023-05-08"));
+        assert!(
+            d.meta.occurrences.is_empty(),
+            "nothing extra to store for the common case"
+        );
+    }
+
+    /// The same words on two different days are two things that happened.
+    /// Collapsing the text is fine; losing a date is not.
+    #[test]
+    fn absorbing_a_duplicate_keeps_both_days() {
+        let mut keep = dated("the standup notes", "2023-04-10");
+        let gone = dated("the standup notes", "2023-06-26");
+        keep.absorb_occurrences_of(&gone);
+
+        let days: Vec<_> = keep
+            .all_occurrences()
+            .into_iter()
+            .filter_map(|o| o.content_date)
+            .collect();
+        assert_eq!(
+            days,
+            ["2023-04-10", "2023-06-26"],
+            "chronological, both kept"
+        );
+        assert_eq!(
+            keep.meta.content_date.as_deref(),
+            Some("2023-04-10"),
+            "the survivor's own date is unchanged"
+        );
+        assert_eq!(keep.content, "the standup notes", "one copy of the text");
+    }
+
+    /// Re-ingesting the same corpus is one appearance filed twice, not two
+    /// appearances — otherwise every re-run inflates the history.
+    #[test]
+    fn refiling_the_same_day_does_not_invent_an_appearance() {
+        let mut keep = dated("the standup notes", "2023-04-10");
+        let again = dated("the standup notes", "2023-04-10");
+        keep.absorb_occurrences_of(&again);
+        assert_eq!(keep.all_occurrences().len(), 1);
+        assert!(keep.meta.occurrences.is_empty());
+    }
+
+    #[test]
+    fn absorbing_is_order_independent_and_accumulates() {
+        let mut a = dated("same words", "2023-03-01");
+        a.absorb_occurrences_of(&dated("same words", "2023-05-01"));
+        a.absorb_occurrences_of(&dated("same words", "2023-04-01"));
+        let days: Vec<_> = a
+            .all_occurrences()
+            .into_iter()
+            .filter_map(|o| o.content_date)
+            .collect();
+        assert_eq!(days, ["2023-03-01", "2023-04-01", "2023-05-01"]);
+    }
+
+    /// Undated text has no chronological position to record, so it collapses
+    /// to a single appearance rather than accumulating filing timestamps.
+    #[test]
+    fn undated_duplicates_collapse_to_one_appearance() {
+        let mut a = Drawer::new("w", "r", "no date here".into(), None, 0, "test");
+        let b = Drawer::new("w", "r", "no date here".into(), None, 0, "test");
+        a.absorb_occurrences_of(&b);
+        assert_eq!(a.all_occurrences().len(), 1);
+    }
+
+    /// Empty occurrences must serialize to nothing, so every drawer written
+    /// before this existed keeps its exact bytes and keeps verifying.
+    #[test]
+    fn no_occurrences_adds_nothing_to_the_stored_bytes() {
+        let d = dated("plain", "2023-05-08");
+        let json = serde_json::to_string(&d.meta).unwrap();
+        assert!(!json.contains("occurrences"), "{json}");
     }
 
     // ---- the reading is live; the seal is the record --------------------
