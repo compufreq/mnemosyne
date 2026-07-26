@@ -842,6 +842,32 @@ impl PalaceStore {
         Ok(n as u64)
     }
 
+    /// An index no drawer in this vault has ever been given.
+    ///
+    /// For callers that need a unique *slot* rather than a chunk's position
+    /// within a source: a note saved through an API has no source to be the
+    /// fourth chunk of, but its id still has to be unique, and `chunk_index`
+    /// is the only field left to carry that.
+    ///
+    /// [`count`](Self::count) cannot serve, and the difference is a data-loss
+    /// bug rather than a nicety. `COUNT(*)` goes *down* when a drawer is
+    /// deleted, so the next save is handed an index that is still in use, the
+    /// derived id collides, and `ON CONFLICT(id) DO UPDATE` overwrites the
+    /// unrelated drawer holding it — a record destroyed by writing a
+    /// different one. SQLite's `AUTOINCREMENT` sequence never reuses a rowid,
+    /// so it only ever moves forward.
+    ///
+    /// Identical to `count()` for any vault that has never deleted, so
+    /// existing ids are unaffected.
+    pub fn next_append_index(&self) -> Result<u64, StoreError> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'drawers'), 0)",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
     /// Whether this vault stores caller-supplied embeddings
     /// (`external:<name>@<dim>` identity). Such vaults reject
     /// [`upsert`](Self::upsert) — use [`upsert_external`](Self::upsert_external).
@@ -2128,6 +2154,39 @@ mod tests {
         assert_eq!(capped.len(), 3, "capped search still fills the limit");
         // The cap can only change WHICH rooms appear, never how many hits.
         assert!(capped.iter().any(|h| h.drawer.meta.room == "quiet"));
+    }
+
+    /// Exactly what `POST /v1/vaults/{id}/drawers` does: index the new
+    /// drawer by the store's current row count.
+    fn rest_save(s: &mut PalaceStore, wing: &str, room: &str, text: &str) -> String {
+        let idx = s.next_append_index().unwrap() as u32;
+        let d = Drawer::new(wing, room, text.into(), None, idx, "rest");
+        s.upsert(&d).unwrap();
+        d.id
+    }
+
+    /// `count()` is `SELECT COUNT(*)`, so it goes DOWN when a drawer is
+    /// deleted — and it is the drawer id's uniquifier on the REST write path.
+    /// After a delete, the next save reuses an index that is still in use,
+    /// and `ON CONFLICT(id) DO UPDATE` overwrites the drawer holding it.
+    /// An unrelated record is destroyed by writing a new one.
+    #[test]
+    fn a_rest_save_after_a_delete_must_not_overwrite_an_unrelated_drawer() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        let a = rest_save(&mut s, "w", "r", "first note");
+        let b = rest_save(&mut s, "w", "r", "second note");
+        assert_ne!(a, b);
+
+        assert!(s.delete_drawer(&a).unwrap());
+        let c = rest_save(&mut s, "w", "r", "third note");
+
+        assert_ne!(c, b, "a new save must not land on an existing drawer's id");
+        assert_eq!(
+            s.get(&b).unwrap().map(|d| d.content),
+            Some("second note".to_string()),
+            "the unrelated drawer must survive"
+        );
+        assert_eq!(s.count().unwrap(), 2, "two drawers remain");
     }
 
     fn drawer(wing: &str, room: &str, content: &str, idx: u32) -> Drawer {

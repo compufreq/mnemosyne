@@ -264,7 +264,7 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
             if normalized.is_empty() {
                 anyhow::bail!("content is empty after normalization");
             }
-            let idx = store.count()? as u32;
+            let idx = store.next_append_index()? as u32;
             let drawer = Drawer::new(wing, room, normalized, None, idx, "mcp")
                 .with_content_date(opt_str(args, "content_date").map(str::to_string));
             store.upsert(&drawer)?;
@@ -359,7 +359,7 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
             if normalized.is_empty() {
                 anyhow::bail!("content is empty after normalization");
             }
-            let idx = store.count()? as u32;
+            let idx = store.next_append_index()? as u32;
             let drawer = Drawer::new(
                 wing,
                 room,

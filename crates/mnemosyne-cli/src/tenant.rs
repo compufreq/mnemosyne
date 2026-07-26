@@ -489,7 +489,7 @@ impl Tenancy {
             .map(String::from);
 
         let store = self.store_for(id)?;
-        let idx = store.count().map_err(err500)? as u32;
+        let idx = store.next_append_index().map_err(err500)? as u32;
         let drawer =
             Drawer::new(wing, room, normalized, None, idx, "rest").with_content_date(content_date);
 
