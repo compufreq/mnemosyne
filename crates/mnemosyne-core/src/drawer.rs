@@ -151,6 +151,37 @@ impl Drawer {
         out
     }
 
+    /// This drawer's metadata with every field that copies words out of the
+    /// content emptied — what a store may write beside sealed ciphertext.
+    ///
+    /// `meta_json` is not sealed. That is fine for wing, room, dates and
+    /// counts, which are structure rather than content, and it is the same
+    /// trade-off plaintext wing/room names already make. It is **not** fine
+    /// for `time_mentions[].text`, which holds the exact date expression as
+    /// written, or for `entities`, which holds the names. A sealed vault that
+    /// encrypts the sentence and writes its dates and names in the clear
+    /// beside the ciphertext has not sealed the sentence.
+    ///
+    /// Nothing is lost by dropping them. Both are derived structure,
+    /// recomputable from content the reader has already decrypted, and the
+    /// read path recomputes mentions live in any case
+    /// ([`live_time_mentions`](Self::live_time_mentions)). What survives here
+    /// is the *resolutions* — offsets and ISO dates — which are not content
+    /// and which keep the stored reading comparable with the live one.
+    ///
+    /// Applied at both security levels: an hmac-only vault stores its content
+    /// in the clear anyway, so stripping costs it nothing and keeps one
+    /// storage contract instead of two.
+    #[must_use]
+    pub fn meta_at_rest(&self) -> DrawerMeta {
+        let mut meta = self.meta.clone();
+        for m in &mut meta.time_mentions {
+            m.text.clear();
+        }
+        meta.entities.clear();
+        meta
+    }
+
     /// Record that this same content was also seen as `other`, keeping the
     /// dates that collapsing the text would otherwise destroy.
     ///
@@ -232,6 +263,16 @@ impl Drawer {
         crate::temporal::extract_time_mentions_in(&self.content, anchor, locale)
     }
 
+    /// The names in this drawer's content, as this build reads them.
+    ///
+    /// Derived rather than stored for the same reason the times are read
+    /// live: a name is a word out of the content, and
+    /// [`meta_at_rest`](Self::meta_at_rest) keeps those out of unsealed
+    /// metadata. The reader has the content already, so nothing is lost.
+    pub fn live_entities(&self) -> Vec<String> {
+        crate::entity::extract_entities(&self.content)
+    }
+
     /// Whether this build reads the drawer's times differently from the
     /// reading sealed onto it.
     ///
@@ -239,8 +280,20 @@ impl Drawer {
     /// language, not that anything is corrupt. Surfaced rather than resolved
     /// silently: a caller comparing an export against a live answer deserves
     /// to know which of the two it is looking at.
+    ///
+    /// Compared on the *resolutions* — the stored copy carries no verbatim
+    /// span, by design, so comparing the text would report every drawer as
+    /// disagreeing and say nothing at all.
     pub fn time_mentions_differ(&self) -> bool {
-        self.live_time_mentions() != self.meta.time_mentions
+        let strip = |v: Vec<crate::temporal::TimeMention>| {
+            v.into_iter()
+                .map(|mut m| {
+                    m.text.clear();
+                    m
+                })
+                .collect::<Vec<_>>()
+        };
+        strip(self.live_time_mentions()) != strip(self.meta.time_mentions.clone())
     }
 
     /// Canonical bytes covered by the integrity HMAC: id, meta (canonical

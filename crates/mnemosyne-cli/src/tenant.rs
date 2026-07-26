@@ -625,10 +625,11 @@ impl Tenancy {
                     // reading: the drawer was written by an older
                     // understanding of the language. Not an error, and not
                     // something to resolve silently.
-                    "mentions_restated": (h.drawer.live_time_mentions_in(locale)
-                        != h.drawer.meta.time_mentions)
+                    "mentions_restated": h.drawer.time_mentions_differ()
                         .then_some(true),
-                    "entities": h.drawer.meta.entities,
+                    // Derived at read: names are words out of the content, and unsealed
+                    // metadata must not carry them. See Drawer::meta_at_rest.
+                    "entities": h.drawer.live_entities(),
                     // Exact whole-day offsets from `as_of`, computed here
                     // rather than left to the reader. `elapsed` is the same
                     // interval phrased for display; both are omitted when the

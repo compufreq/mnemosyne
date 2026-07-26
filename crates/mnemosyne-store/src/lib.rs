@@ -987,8 +987,14 @@ impl PalaceStore {
         drawer: &Drawer,
         embedding: &[f32],
     ) -> Result<(bool, String, u64), StoreError> {
+        // meta_json is stored unsealed, so it must not carry words copied out
+        // of the content — the date expressions and names that derivation
+        // lifts verbatim. `meta_at_rest` empties exactly those and keeps the
+        // resolutions, which are offsets and ISO dates rather than content.
+        // The tag below covers what is actually written, so verify stays
+        // consistent with storage.
         let meta_json =
-            serde_json::to_string(&drawer.meta).map_err(|e| StoreError::CorruptRow {
+            serde_json::to_string(&drawer.meta_at_rest()).map_err(|e| StoreError::CorruptRow {
                 id: drawer.id.clone(),
                 reason: e.to_string(),
             })?;
@@ -3243,6 +3249,32 @@ mod tests {
         assert!(
             !db.windows(needle.len()).any(|w| w == needle),
             "plaintext leaked into sealed vault database"
+        );
+    }
+
+    /// The existing at-rest test uses a secret containing no date expression
+    /// and no name, so it cannot see this: *derived* structure is stored in
+    /// `meta_json`, which is not sealed, and two of those fields hold spans
+    /// copied verbatim out of the content. A sealed vault that encrypts the
+    /// sentence and writes fragments of it in the clear beside the ciphertext
+    /// has not sealed the sentence.
+    #[test]
+    fn sealed_vault_leaks_no_derived_fragment_of_its_content() {
+        let (dir, mut s) = store(SecurityLevel::Sealed);
+        // "Zerlinda" is a name the entity extractor takes; "three weeks ago"
+        // is a span the temporal scanner records verbatim.
+        let secret = "the passphrase came from Zerlinda three weeks ago";
+        s.upsert(&drawer("w", "r", secret, 0).with_content_date(Some("2023-05-08".into())))
+            .unwrap();
+        drop(s);
+        let db = std::fs::read(dir.path().join("vaults/test/palace.db")).unwrap();
+        let leaked: Vec<&str> = ["Zerlinda", "zerlinda", "three weeks ago", "passphrase"]
+            .into_iter()
+            .filter(|n| db.windows(n.len()).any(|w| w == n.as_bytes()))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "sealed vault wrote content fragments in the clear: {leaked:?}"
         );
     }
 

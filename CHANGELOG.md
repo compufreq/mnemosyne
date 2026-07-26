@@ -2,6 +2,26 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **A sealed vault no longer writes fragments of its content in the clear.**
+  `meta_json` is stored unsealed — fine for wing, room, dates and counts, the
+  same trade-off plaintext wing/room names already make. It is not fine for
+  two fields that derivation lifts *verbatim* out of the content:
+  `time_mentions[].text` held every date expression as written, and
+  `entities` held every name. A vault that encrypts the sentence and writes
+  its dates and names beside the ciphertext has not sealed the sentence, and
+  the invariant says exactly that. Found by widening the at-rest test, which
+  had used a secret containing neither a date nor a name and so could not see
+  it; proved against the bytes on disk, which reported `["zerlinda",
+  "three weeks ago"]`. `Drawer::meta_at_rest()` empties both before the row is
+  written, and the tag covers what is actually stored. Nothing is lost: both
+  are derived structure the reader recomputes from content it has already
+  decrypted, mentions were already being read live, and `entities` is now
+  derived at read too. What survives storage is the *resolutions* — offsets
+  and ISO dates, which are not content — so a stored reading stays comparable
+  with a live one. Applied at both security levels, so there is one storage
+  contract rather than two. **Existing vaults keep the fragments already
+  written**; purging them needs a rewrite pass, which the queued re-seal
+  migration is the natural home for.
 - **Deduplication collapses the text and keeps every date.** The content
   fingerprint covers content only, so `dedup --apply` grouped byte-identical
   drawers vault-wide and deleted all but the first — and the same words
