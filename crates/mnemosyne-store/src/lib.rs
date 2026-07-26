@@ -3278,6 +3278,60 @@ mod tests {
         );
     }
 
+    /// What a stolen sealed-vault file reveals — asserted, so a change in
+    /// either direction trips it.
+    ///
+    /// Content is sealed and must stay sealed; that half is the guarantee.
+    /// The other half is an honest inventory of what metadata is still
+    /// readable, because `meta_json` is stored unsealed and pretending
+    /// otherwise would be worse than the exposure. An attacker holding the
+    /// file learns the wing and room names — which in practice are topics,
+    /// people, cases — the source path, when the content happened, and the
+    /// dates resolved out of it. They do not learn a word of the content.
+    ///
+    /// This list is not an endorsement. It is the thing to shrink, and this
+    /// test is what will notice when it does.
+    #[test]
+    fn a_sealed_vault_exposes_metadata_but_never_content() {
+        let (dir, mut s) = store(SecurityLevel::Sealed);
+        let mut d = Drawer::new(
+            "wingsecretmerger",
+            "roomdivorcecase",
+            "Zerlinda signed the acquisition three weeks ago in Geneva.".into(),
+            Some("/home/alice/projects/acquisition-secret/notes.md".into()),
+            7,
+            "addedbyprobe",
+        )
+        .with_content_date(Some("2023-05-08".into()));
+        d.meta.hall = Some("hallsecretlabel".into());
+        s.upsert(&d).unwrap();
+        drop(s);
+        let db = std::fs::read(dir.path().join("vaults/test/palace.db")).unwrap();
+        let has = |n: &str| db.windows(n.len()).any(|w| w == n.as_bytes());
+
+        // The guarantee: not one word of the content, nor anything derived
+        // from it that copies its words.
+        for secret in ["Zerlinda", "zerlinda", "Geneva", "three weeks ago"] {
+            assert!(!has(secret), "content leaked into a sealed vault: {secret}");
+        }
+
+        // The inventory: readable today, and each one is a thing to fix.
+        for (what, needle) in [
+            ("wing name", "wingsecretmerger"),
+            ("room name", "roomdivorcecase"),
+            ("source path", "/home/alice/projects/acquisition-secret"),
+            ("added_by", "addedbyprobe"),
+            ("hall label", "hallsecretlabel"),
+            ("content_date", "2023-05-08"),
+            ("a date resolved out of the content", "2023-04-17"),
+        ] {
+            assert!(
+                has(needle),
+                "{what} is no longer readable — good, but update this inventory"
+            );
+        }
+    }
+
     #[test]
     fn hmac_only_content_is_plaintext_but_tagged() {
         let (dir, mut s) = store(SecurityLevel::HmacOnly);

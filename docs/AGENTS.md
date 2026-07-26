@@ -28,7 +28,16 @@ HKDF-derived keys). When you build on it:
    is opt-in at build time and metadata-only.
 3. **Sealed vaults keep nothing plaintext-derived on disk.** Do not write
    sidecar files, caches, or logs containing drawer content next to a
-   sealed vault.
+   sealed vault. **Know precisely what this does and does not cover.**
+   Content, embeddings, PQ codes, ColBERT matrices and grounding spans are
+   sealed. Drawer *metadata* is not: an attacker holding the database file
+   reads the wing and room names — which in practice are topics, people or
+   case identifiers — the `source_file` path, `added_by`, the hall label,
+   `content_date`, and the dates resolved out of the content. They read no
+   word of the content itself. If a wing name, a room name or a file path
+   would be sensitive in your deployment, **do not put the secret in the
+   name** — treat those as public labels until this is closed. The exposure
+   is pinned by a test so it cannot widen unnoticed.
 4. **Drawer ids are deterministic** over (wing, room, source, chunk_index),
    but what that buys you depends on the path. Ingest *from a source* —
    `mine`, `sweep`, `import` — is idempotent: the source path and the chunk's
@@ -239,9 +248,31 @@ per vault on first write, and a model swap is refused unless you set
 
 | Value | What | When |
 |---|---|---|
-| `hash` (default) | deterministic hashed n-grams, offline, zero deps | correct default; measured LoCoMo R@10 92.7% with hybrid search |
+| `hash` (default) | deterministic hashed n-grams, offline, zero deps | correct default; measured LoCoMo R@10 92.7% with hybrid search. **Single-language only** — see below |
 | `onnx` | user-supplied MiniLM-class ONNX via tract (pure Rust); needs `MNEMOSYNE_ONNX_MODEL`/`_TOKENIZER`, build `--features onnx` | best recall, pure-Rust constraint |
 | `ort` | same models via ONNX Runtime (C++ dep, build `--features ort`); ~2.5× faster/forward, int8 support, ~4–5× faster ingest | throughput matters; same env vars, switching is one env change |
+
+**Cross-lingual retrieval needs a multilingual embedder — the default
+cannot do it, and will not tell you so.** `hash` is feature hashing over
+surface forms: word unigrams, word bigrams and character trigrams, each
+SHA-256'd into a bucket. Two texts score close only when they share literal
+tokens or trigrams. An English query and an Arabic note share none, so the
+score is noise — measured, a translation pair scored *lower* than an
+unrelated sentence. The same limit applies within one language: `car` and
+`automobile` do not match either. The trigrams buy morphology
+(`run`/`running`), not meaning.
+
+So a vault holding several languages, or queried in a language other than
+the one it was written in, needs `onnx`/`ort` with a **multilingual** model
+(LaBSE, multilingual-e5, nomic-embed-text-v2-moe) — or an external vault,
+where you supply vectors yourself and the engine never embeds. Either way
+the vectors are sealed at rest exactly like the default ones, so this costs
+nothing in confidentiality.
+
+Note the two axes are independent. **Retrieval** across languages is the
+embedder's job. **Reading dates inside the text** is the scanner's, selected
+per request with `language` (`en`, `ar`), and it works regardless of which
+embedder found the drawer.
 
 **Second stage** (`MNEMOSYNE_RERANKER`): `onnx`/`ort` = cross-encoder
 re-scoring of the top `MNEMOSYNE_RERANK_TOP_N` (default 50) — measured
