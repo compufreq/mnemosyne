@@ -171,7 +171,13 @@ Heavy cargo work: use the `mnemosyne-target` volume + `CARGO_TARGET_DIR=/build`
   or keys) and nothing leaves the process unless an endpoint is set.
 - Drawer ids are deterministic over (wing, room, source, chunk_index,
   normalize_version); re-mining must stay idempotent and append-only — a crash
-  mid-operation must leave the existing palace untouched.
+  mid-operation must leave the existing palace untouched. On the API save
+  paths there is no source, so `chunk_index` carries a **unique append
+  index** (`next_append_index`, backed by SQLite's AUTOINCREMENT sequence)
+  rather than a position within a document: those saves are unique-per-call,
+  not idempotent, and collapsing repeats is dedup's job. Never index an
+  append with `count()` — it decreases on delete, and a reused index derives
+  an id that already exists, silently overwriting an unrelated drawer.
 - Sealed vaults must never persist plaintext or plaintext-derived data **in
   clear** on disk: FTS never exists for them; embeddings, PQ code rows/pages
   and codebooks, and ColBERT token matrices are AEAD-sealed under distinct

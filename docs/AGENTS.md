@@ -29,9 +29,18 @@ HKDF-derived keys). When you build on it:
 3. **Sealed vaults keep nothing plaintext-derived on disk.** Do not write
    sidecar files, caches, or logs containing drawer content next to a
    sealed vault.
-4. **Drawer ids are deterministic** over (wing, room, source, chunk_index).
-   Re-ingesting the same source is idempotent — rely on that instead of
-   inventing your own dedup on top.
+4. **Drawer ids are deterministic** over (wing, room, source, chunk_index),
+   but what that buys you depends on the path. Ingest *from a source* —
+   `mine`, `sweep`, `import` — is idempotent: the source path and the chunk's
+   position within it are the id, so processing the same file twice updates
+   in place. Rely on that instead of inventing your own dedup on top.
+   **A save through an API is not.** `POST /v1/drawers`, `mnemosyne_save`
+   and `mnemosyne_add_drawer` have no source to be a chunk of, so
+   `chunk_index` carries a unique append index instead and every call
+   creates a new drawer — posting identical text twice gives you two.
+   That is deliberate: the same words on a different day are a different
+   event. To collapse repeats, pass `dedup_threshold` on save or run
+   `mnemosyne_dedup`; both keep every date the text appeared on.
 5. **Integrity is enforced, not assumed.** Every read verifies an HMAC;
    every write advances a tamper-evident audit chain in the same
    transaction. If `verify` fails, treat it as an incident (see the

@@ -33,6 +33,14 @@ pub struct DrawerMeta {
     pub room: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
+    /// Position of this chunk within `source_file` — **when there is one.**
+    ///
+    /// A save that arrives through an API has no source to be the fourth
+    /// chunk of, but its id still has to be unique, and this is the only
+    /// field left to carry that. Those paths put a monotonic append index
+    /// here instead (`PalaceStore::next_append_index`). So it orders chunks
+    /// within a document, and orders nothing at all across API saves — read
+    /// it together with `source_file` or not at all.
     pub chunk_index: u32,
     pub added_by: String,
     /// RFC 3339 timestamp of when the drawer was filed.
