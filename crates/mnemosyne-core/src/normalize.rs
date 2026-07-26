@@ -10,6 +10,42 @@
 /// content in a script, not formatting noise.
 pub const NORMALIZE_VERSION: u32 = 2;
 
+/// The key two texts must share to count as the same text.
+///
+/// Unicode lets one visible string be written several ways. "é" is one code
+/// point or two. Arabic أ is either U+0623 or bare alef plus a combining
+/// hamza — and that class covers أحمد, إبراهيم, مؤمن, رئيس, so it is the
+/// common case, not an exotic one. Byte comparison calls those different, so
+/// a fingerprint misses the duplicate and a lexical query misses the drawer,
+/// silently, and only for non-ASCII text — exactly the text least likely to
+/// be noticed failing.
+///
+/// This composes to NFC, which is *canonical* equivalence only: the result
+/// renders identically by Unicode's own definition. Compatibility folding
+/// (NFKC) is deliberately not applied — it rewrites ﬁ to fi and ① to 1, which
+/// changes content rather than encoding.
+///
+/// What it therefore does **not** fix: tatweel (ـ) is a real character, not a
+/// decomposition, and Arabic presentation forms are compatibility mappings —
+/// both survive NFC and would need their own decision about whether removing
+/// them is normalization or editing.
+///
+/// **Comparison only.** Stored content keeps the writer's exact bytes: the
+/// promise is verbatim, and normalizing on the way in would quietly edit
+/// text to make our indexes tidier. It would also change
+/// [`NORMALIZE_VERSION`], which is inside the drawer id, so every future id
+/// would move. Deriving the key at comparison time costs one scan and no
+/// migration.
+pub fn match_key(s: &str) -> std::borrow::Cow<'_, str> {
+    use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+    // Almost all real input is already NFC; the quick check keeps this a scan
+    // rather than a rebuild on the hot path.
+    match is_nfc_quick(s.chars()) {
+        IsNormalized::Yes => std::borrow::Cow::Borrowed(s),
+        _ => std::borrow::Cow::Owned(s.nfc().collect()),
+    }
+}
+
 /// How much tidying the content can survive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NormalizeMode {
@@ -452,5 +488,67 @@ mod tests {
         let src = "import os\n\n\n\ndef main():\n    args = []   \n    return args\n";
         let mode = mode_for_path(std::path::Path::new("tool.py"));
         assert_eq!(normalize_content_mode(src, mode), src.trim_matches('\n'));
+    }
+
+    // ---- comparison keys, not content ------------------------------------
+
+    /// Arabic أ is either one code point or alef plus a combining hamza. The
+    /// two render identically and mean the same thing, so a fingerprint taken
+    /// over raw bytes would call them different content and miss the
+    /// duplicate — silently, since nothing on screen distinguishes them.
+    #[test]
+    fn canonically_equal_arabic_shares_one_key() {
+        let composed = "أحمد";
+        let decomposed = "\u{0627}\u{0654}\u{062D}\u{0645}\u{062F}";
+        assert_ne!(
+            composed.as_bytes(),
+            decomposed.as_bytes(),
+            "different bytes"
+        );
+        assert_eq!(match_key(composed), match_key(decomposed), "same text");
+    }
+
+    #[test]
+    fn canonically_equal_latin_shares_one_key() {
+        let composed = "caf\u{00E9}";
+        let decomposed = "cafe\u{0301}";
+        assert_ne!(composed, decomposed);
+        assert_eq!(match_key(composed), match_key(decomposed));
+    }
+
+    /// Compatibility folding would make these equal. It is not applied,
+    /// because rewriting ﬁ to fi changes the content rather than its encoding.
+    #[test]
+    fn compatibility_variants_stay_distinct() {
+        assert_ne!(match_key("\u{FB01}le"), match_key("file"));
+        assert_ne!(match_key("\u{2460}"), match_key("1"));
+    }
+
+    /// Tatweel is a character the writer typed, not a decomposition — folding
+    /// it away here would be editing, so it survives and the gap is stated.
+    #[test]
+    fn tatweel_is_not_removed() {
+        assert_ne!(match_key("مـحـمد"), match_key("محمد"));
+    }
+
+    /// The hot path is every fingerprint and every token, and almost all real
+    /// input is already NFC, so the common case must not allocate.
+    #[test]
+    fn already_canonical_text_is_borrowed_not_rebuilt() {
+        assert!(matches!(
+            match_key("plain ascii and محمد alike"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    /// Comparison keys must never leak into what we store.
+    #[test]
+    fn normalization_does_not_compose_stored_content() {
+        let decomposed = "cafe\u{0301}";
+        assert_eq!(
+            normalize_content(decomposed),
+            decomposed,
+            "stored bytes stay exactly as written"
+        );
     }
 }

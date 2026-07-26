@@ -1443,12 +1443,7 @@ impl PalaceStore {
         let _span = mnemosyne_obs::scope("search", self.vault.id());
         let obs_start = std::time::Instant::now();
         let limit = if opts.limit == 0 { 10 } else { opts.limit };
-        let qterms: Vec<String> = query
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 1)
-            .map(str::to_string)
-            .collect();
+        let qterms: Vec<String> = tokenize(query);
 
         let candidates = if self.fde_enabled {
             // MUVERA FDE candidates: token-aware single-vector ranking over
@@ -1704,12 +1699,7 @@ impl PalaceStore {
         query: &str,
         qvec: &[f32],
     ) -> SearchHit {
-        let qterms: Vec<String> = query
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 1)
-            .map(str::to_string)
-            .collect();
+        let qterms: Vec<String> = tokenize(query);
         let emb = self.embedder.embed(&drawer.content);
         let semantic = ((cosine(qvec, &emb) + 1.0) / 2.0).clamp(0.0, 1.0);
         let lexical = lexical_score(&qterms, query, &drawer.content);
@@ -1833,8 +1823,14 @@ struct Candidate {
 
 /// Lowercase alphanumeric tokens of length > 1 — the same tokenization the
 /// query goes through, so BM25 term matching is symmetric with the query.
+///
+/// Canonicalized first. `is_alphanumeric` is already Unicode-aware, so Arabic
+/// and CJK tokenize; what byte comparison misses is the *same* word written
+/// with a different but canonically equivalent encoding, which would put the
+/// query and the drawer in different buckets for no reason a reader could
+/// see. Both sides run through here, so the fold stays symmetric.
 fn tokenize(content: &str) -> Vec<String> {
-    content
+    mnemosyne_core::normalize::match_key(content)
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() > 1)
@@ -1990,7 +1986,9 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> f32 {
     if qterms.is_empty() {
         return 0.0;
     }
-    let lower = content.to_lowercase();
+    // Same canonical fold the query terms went through, or a drawer written
+    // with a different but equivalent encoding cannot match its own words.
+    let lower = mnemosyne_core::normalize::match_key(content).to_lowercase();
     let words: Vec<&str> = lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -2003,7 +2001,7 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> f32 {
         })
         .count() as f32;
     let mut score = matched / qterms.len() as f32;
-    let phrase = raw_query.trim().to_lowercase();
+    let phrase = mnemosyne_core::normalize::match_key(raw_query.trim()).to_lowercase();
     if phrase.len() > 3 && lower.contains(&phrase) {
         score = (score + 0.5).min(1.0);
     }

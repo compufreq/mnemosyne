@@ -115,10 +115,17 @@ impl PalaceStore {
 
     /// Keyed content fingerprint: HMAC(mac_key, "fp" || content), truncated.
     /// Deterministic for equality lookups, useless without the vault key.
+    ///
+    /// Taken over the canonical form, not the raw bytes: two strings that
+    /// render identically are the same content, and a duplicate written with
+    /// composed accents or Arabic harakat encoded differently is still a
+    /// duplicate. The stored text is untouched — only the key we compare by
+    /// is folded.
     pub(crate) fn fingerprint(&self, content: &str) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(content.len() + 3);
+        let key = mnemosyne_core::normalize::match_key(content);
+        let mut buf = Vec::with_capacity(key.len() + 3);
         buf.extend_from_slice(b"fp\x1f");
-        buf.extend_from_slice(content.as_bytes());
+        buf.extend_from_slice(key.as_bytes());
         self.vault.tag(&buf)[..16].to_vec()
     }
 
@@ -832,6 +839,28 @@ mod tests {
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.dates_kept, 0, "nothing new happened");
         assert_eq!(s.get(&a.id).unwrap().unwrap().all_occurrences().len(), 1);
+    }
+
+    /// The duplicate a byte comparison cannot see: the same Arabic name
+    /// written with a composed hamza in one drawer and a combining one in
+    /// the other. Identical on screen, identical in meaning, and previously
+    /// two separate records that dedup would never pair.
+    #[test]
+    fn canonically_equal_text_is_one_duplicate() {
+        let (_d, mut s) = store();
+        let composed = "قابلت أحمد أمس";
+        let decomposed = "قابلت \u{0627}\u{0654}حمد أمس";
+        assert_ne!(composed, decomposed, "the bytes really do differ");
+
+        s.upsert(&drawer("w", "r", composed, 0)).unwrap();
+        assert!(
+            s.check_duplicate(decomposed).unwrap().is_some(),
+            "the other encoding must be recognised as the same content"
+        );
+
+        s.upsert(&drawer("w", "r2", decomposed, 0)).unwrap();
+        let report = s.dedup(true).unwrap();
+        assert_eq!(report.removed.len(), 1, "and dedup must pair them");
     }
 
     #[test]

@@ -52,6 +52,7 @@ rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 hex = "0.4"
+unicode-normalization = "0.1"
 subtle = "2.6"
 tempfile = "3"
 instant-distance = "0.6"
