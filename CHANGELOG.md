@@ -2,6 +2,39 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **A shared fragment is not evidence — Arabic was admitting the whole vault.**
+  Measured against the shipped code on a real 50k-word Arabic frequency corpus
+  with control drawers: **one Arabic content word admitted 74.3% of a
+  120-drawer vault.** The same code, same drawer length, on Greek: 6.9%. A
+  10.8x difference produced by one line in `script.rs`. Arabic is
+  non-delimiting, so `segment` emits character bigrams for the *query* as well
+  as the document, bigram met bigram by literal equality, and literal equality
+  fills the exact slot — so a shared two-character substring in an unvocalised
+  abjad was read as "the drawer said your word". It is the failure
+  `is_logographic` documents for unigrams, one n-gram order lower, in a script
+  the module claims to serve. The grades were indistinguishable, which is the
+  proof: `كتاب`/`كتب` (book/books) shares one bigram and ranked 13, while
+  `كريم`/`كرم` (a name / generosity) ranked **1** and `مصر`/`مصرف`
+  (Egypt / bank) ranked **2**. `Segmented` now flags n-grams from
+  non-delimiting, non-logographic scripts and they are refused the exact slot;
+  Han is deliberately unflagged, because there a character is a morpheme.
+  Clitics are carried instead by whole-word containment (`shares_a_stem`, ≥3
+  chars, into `lexical_morph`), so `كتاب`→`الكتاب`, `مكتبة`→`بالمكتبة` and
+  `معلم`→`المعلمون` still work — on a contiguous chain over the stem rather
+  than one fragment. The 3-character floor runs at 0.519 morphological
+  precision (0.820 at four, 0.911 at five); it is labelled and discounted, and
+  it admits, which is why that number is stated. Verified **monotone** over
+  665,750 query/drawer pairs — it admits nothing the previous code did not, so
+  it cannot introduce a new false merge. No dependency, and no identity bump:
+  `segment`'s tokens are byte-identical and only the flags are new.
+- **Recorded, not fixed: stripping Greek accents over-merges in the exact
+  channel.** `πότε` (when) folds onto `ποτέ` (never), and `καλά` onto `κάλα` —
+  one token, so they meet by literal equality and are admitted at rank 1. Not a
+  bug to revert: the accent strip is what lets an all-caps or carelessly-typed
+  Greek query find anything, and it is what makes our fold comparable to
+  Lucene's accent-stripped Greek analysis. It is a cost of the fold, it is
+  pinned by test, and it is written at `search_key` because five rounds of
+  review looked past it.
 - **A key for finding a word, distinct from a key for being it.** `match_key`
   answers "is this the same text?" — it is what `fingerprint()` compares, so
   folding there would make 中國 and 中国 the same *drawer* for dedup, and it

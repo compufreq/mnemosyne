@@ -73,6 +73,16 @@ pub fn match_key(s: &str) -> std::borrow::Cow<'_, str> {
 /// stops the marked minority from ever matching the unmarked majority. What is
 /// lost is provenance, and it is lost only in the comparison key.
 ///
+/// **A recorded over-merge, in the exact channel.** Stripping Greek accents
+/// folds `πότε` (when) onto `ποτέ` (never), and `καλά` (well) onto `κάλα`.
+/// Those become one token, so they meet by literal equality and are admitted
+/// as though the drawer said the queried word — measured, at rank 1. This is
+/// not a bug to revert: the accent strip is what lets an all-caps or
+/// carelessly-typed Greek query find anything at all, and it is what makes our
+/// fold comparable to Lucene's own accent-stripped Greek analysis. It is a
+/// cost, it lands in the channel that admits, and it is written here because
+/// five rounds of review looked straight past it.
+///
 /// **Comparison only**, exactly like [`match_key`]: stored bytes are verbatim,
 /// drawer ids and [`NORMALIZE_VERSION`] do not move, and dedup keeps
 /// [`match_key`].
@@ -887,6 +897,17 @@ mod tests {
         );
         assert_eq!(search_key("πότε"), search_key("ποτέ"), "when / never");
         assert_eq!(search_key("все"), search_key("всё"), "all / everything");
+    }
+
+    /// The accent strip's own cost, pinned so it stays a known quantity
+    /// rather than a surprise. These are distinct Greek words that the fold
+    /// makes one token — and one token means the EXACT channel, which admits.
+    #[test]
+    fn stripping_greek_accents_merges_these_and_we_accept_it() {
+        assert_eq!(search_key("πότε"), search_key("ποτέ"), "when / never");
+        assert_eq!(search_key("καλά"), search_key("κάλα"));
+        // Not everything collapses: the fold is accents, not letters.
+        assert_ne!(search_key("κατάσταση"), search_key("κατάστημα"));
     }
 
     #[test]
