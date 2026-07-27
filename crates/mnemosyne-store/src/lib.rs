@@ -506,6 +506,21 @@ impl PalaceStore {
                 // fallible work, leaving an operator whose migration cannot
                 // complete with no way in.
                 if std::env::var("MNEMOSYNE_FORCE_EMBEDDER").ok().as_deref() == Some("1") {
+                    // A read-only role must not write, and recording the
+                    // identity is a write. An operator setting the override to
+                    // get a replica past `EmbedderMismatch` would otherwise
+                    // get a replica that claims the new identity, keeps the
+                    // old vectors, and serves a semantic leg spanning two
+                    // embedding spaces — with nothing on disk saying so.
+                    if !may_migrate {
+                        mnemosyne_obs::diag_warn!(
+                            "MNEMOSYNE_FORCE_EMBEDDER=1 on a read-only open: serving {name} \
+                             vectors with the {current_name} embedder, and recording nothing. \
+                             The semantic ranking spans two embedding spaces and is not \
+                             meaningful; the lexical leg is unaffected"
+                        );
+                        return Ok(());
+                    }
                     self.record_embedder_identity()?;
                     return Ok(());
                 }
@@ -5159,6 +5174,44 @@ mod tests {
         // loader propagates the HMAC failure). That predates this change and
         // is not addressed here — what the tolerant walk buys is that `open`,
         // and therefore `verify` and `repair`, still work.
+    }
+
+    /// The override must not turn a read-only open into a write either.
+    #[test]
+    fn force_embedder_writes_nothing_on_a_read_only_open() {
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+        {
+            let mut s = PalaceStore::open(vault).unwrap();
+            s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                .unwrap();
+            // An identity this build does not know how to migrate.
+            s.conn
+                .execute(
+                    "UPDATE meta SET value = 'some-onnx-model' WHERE key = 'embedder_name'",
+                    [],
+                )
+                .unwrap();
+        }
+        std::env::set_var("MNEMOSYNE_FORCE_EMBEDDER", "1");
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let opened =
+            PalaceStore::open_read_only(mgr.unlock("test").unwrap(), Box::new(HashEmbedder));
+        std::env::remove_var("MNEMOSYNE_FORCE_EMBEDDER");
+        let s = opened.expect("the override should still let a read-only open through");
+        let stored: String = s
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='embedder_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, "some-onnx-model",
+            "a read-only open recorded a new identity"
+        );
     }
 
     /// A read-only role serves reads across the upgrade; it does not rewrite
