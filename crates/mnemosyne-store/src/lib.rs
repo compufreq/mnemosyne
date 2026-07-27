@@ -2343,6 +2343,16 @@ fn contains_a_long_word(q: &str, tok: &str) -> bool {
 /// So these pairs *can* be admitted — by the cosine leg, not by this rule.
 /// Reading this containment as absolute overstates what the split buys.
 ///
+/// One asymmetry worth knowing before reading the next paragraph as absolute:
+/// `lexical_score`'s exact leg is unrestricted substring containment with **no
+/// length gate**, so on `Fusion::Legacy` and on every remote-index search a
+/// query `run` against a drawer saying `i was running daily` already yields
+/// `lexical_exact = 1.0` and is admitted. It is the default BM25 path, which
+/// compares whole tokens, that does not. So the short-stem gap is *directional*
+/// (it bites when the query is the shorter form) and holds on one of three
+/// fusion modes — the same shipped inconsistency `contains_a_long_word` was
+/// added to reduce.
+///
 /// What this does not reach, and no prefix rule can: Russian nominal case
 /// (`книга`/`книге` share 4, and so do `город`/`горох`), Greek `πόλη`/`πόλεων`
 /// (3), English short stems (`running`/`run` — `run` is 3 characters), and

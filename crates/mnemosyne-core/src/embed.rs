@@ -67,6 +67,26 @@ impl HashEmbedder {
         }
         for w in &words {
             let chars: Vec<char> = w.chars().collect();
+            // A three-character word emits NO subword feature at all. That is
+            // why `run` cannot meet `running` on the cosine leg: `running`
+            // contributes `t:run`, `run` contributes nothing, and the pair
+            // scores exactly 0.0000 — an open gap, recorded here because the
+            // gate is where someone will come looking for it.
+            //
+            // Lowering it to `> 2` was measured and rejected. It does close the
+            // bare pair (cosine 0.0000 -> 0.1361, semantic 0.5680 against a
+            // 0.5600 gate) but with 0.0080 of headroom that does not survive a
+            // real drawer — at 10-40 words of context it admits 2-4 times in 20
+            // against 1-2 before. The cost is permanent and corpus-wide,
+            // because a whole-word trigram shares a bucket with the same
+            // trigram interior to longer words: `t:the` went 770 -> 5,074 on
+            // this repo's prose, function-word trigram mass 1.86% -> 4.80%, and
+            // cosine-arm admissions +18.7% over twelve realistic queries. The
+            // two effects are inseparable — the bucket collision that lets
+            // whole-word `run` meet interior `run` in `running` is the same one
+            // that makes `the` collide with `there`, `other` and `theme`. And
+            // it would cost a v4 identity: a re-embed per vault, PQ dropped,
+            // every remote mirror `IndexStale`.
             if chars.len() > 3 {
                 for tri in chars.windows(3) {
                     toks.push(format!("t:{}{}{}", tri[0], tri[1], tri[2]));
