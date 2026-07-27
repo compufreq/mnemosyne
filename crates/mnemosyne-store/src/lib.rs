@@ -90,6 +90,26 @@ const KNOWN_EMBEDDER_UPGRADES: &[(&str, &str)] = &[
         mnemosyne_core::embed::HASH_EMBEDDER,
     ),
 ];
+
+// KNOWN GAP, deliberately accepted — no v4.
+//
+// Moving Hebrew out of the delimiting script class changed its token space:
+// `segment` now emits character bigrams for Hebrew where it emitted one word,
+// and the fold strips the points. Every other script's tokens are byte-
+// identical, so the blast radius is Hebrew alone — much narrower than v1→v2
+// (fold + segmentation) or v2→v3 (Brahmic conjuncts), both of which moved
+// tokens for whole script families and therefore bumped.
+//
+// The consequence is real and is not fixed here: a vault that already holds
+// Hebrew content keeps `mnemosyne-hash-v3` vectors built from the old token
+// space, so its Hebrew *cosine* leg stays stale until someone runs
+// `MNEMOSYNE_FORCE_EMBEDDER=1` + `repair`. The lexical channels — which are
+// what this change was for, and what carries Hebrew from 0% to 87.5% — are
+// recomputed at read and are correct immediately.
+//
+// This is a judgement that a whole-fleet re-embed is not worth one script's
+// cosine leg, not a claim that nothing changed. If Hebrew corpora become a
+// real workload, the fix is a v4 row above and it costs 45.9 µs/drawer.
 /// Default number of fusion-ranked candidates a reranker re-scores per search
 /// (override with `MNEMOSYNE_RERANK_TOP_N`). One cross-encoder forward pass
 /// runs per candidate, so this bounds the added latency.
@@ -2436,6 +2456,39 @@ fn contains_a_long_word(q: &str, tok: &str) -> bool {
 /// `Donaudampfschifffahrt` (the embedder's character trigrams already carry
 /// that one on the cosine leg). Stem-rewriting morphology — Arabic broken
 /// plurals, Korean conjugation — shares no contiguous surface at all.
+/// `same_word_family`, but admitting — and only for Greek.
+///
+/// Greek inflection **substitutes** its endings rather than appending them, so
+/// containment reaches almost none of it. Measured over 49 real paradigm pairs
+/// at realistic drawer length: endings that merely append admitted 12 of 15,
+/// endings that replace admitted **1 of 20**. Of the 33 pairs dropped,
+/// `same_word_family` already fires on 9 — every form of `άνθρωπος`, three of
+/// `εργαζόμενος`, `πληροφορίες`, `πληροφοριών`, `εφημερίδες` — but it was
+/// routed to the approximate channel, which ranks and never admits, so those
+/// drawers were **dropped rather than mis-ranked**.
+///
+/// Scoped to the Greek script deliberately, because that is exactly what
+/// separates the benefit from the cost. The three Latin pairs this rule's own
+/// documentation names as the accepted price — `conversation`/`conversion`,
+/// `processor`/`procession`, `internal`/`international` — all measure a
+/// 7-prefix and all would admit. They are Latin; the nine beneficiaries are
+/// Greek. Conditioning on script takes the one and not the other.
+///
+/// Measured Greek cost: `παράδειγμα`/`παράδεισος` (example/paradise), which
+/// shares 7 and diverges by 3. Note what does *not* fire — `πολύ`/`πόλη`, the
+/// frequency argument that killed Snowball Greek, shares only 3 characters. A
+/// stemmer builds an equivalence class that one false friend poisons; a
+/// pairwise predicate answers about two strings and creates no class, which is
+/// why this survives an argument a stemmer did not.
+fn greek_word_family(q: &str, tok: &str) -> bool {
+    let greek = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| matches!(c as u32, 0x0370..=0x03FF | 0x1F00..=0x1FFF))
+    };
+    greek(q) && greek(tok) && same_word_family(q, tok)
+}
+
 fn same_word_family(q: &str, tok: &str) -> bool {
     // Delimiting scripts only. A bigram token from Han, Arabic or Thai must
     // never reach a character-prefix rule.
@@ -2543,10 +2596,9 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             }
             // Checked before the general fuzzy scan so containment lands in
             // its own channel rather than being absorbed as approximate.
-            if let Some(j) = qterms
-                .iter()
-                .position(|q| contains_a_long_word(q, tok) || shares_a_stem(q, tok))
-            {
+            if let Some(j) = qterms.iter().position(|q| {
+                contains_a_long_word(q, tok) || shares_a_stem(q, tok) || greek_word_family(q, tok)
+            }) {
                 tf_morph[i][j] = 1;
                 continue;
             }
@@ -5808,6 +5860,83 @@ mod tests {
         assert!(!shares_a_stem("كريم", "كرم"));
         // Delimiting scripts are untouched by this rule.
         assert!(!shares_a_stem("running", "run"));
+    }
+
+    /// Hebrew scored **0 of 8** — the only language in the audit to admit
+    /// nothing at all, at either drawer length — because it writes with spaces
+    /// and was therefore classed as delimiting, which handed it the
+    /// eight-character floor and excluded it from `shares_a_stem`. Its clitics
+    /// attach at the front with no delimiter, exactly like Arabic's.
+    #[test]
+    fn hebrew_clitics_reach_their_stem() {
+        for (query, content) in [
+            ("ספר", "קראתי את הספר אתמול בערב"),
+            ("ספר", "כתבתי בספר הזה הרבה"),
+            ("ספר", "קניתי ספרים חדשים בחנות"),
+            ("ילד", "הילדים שיחקו בגינה"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "מזג האוויר היה נעים", 1))
+                .unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            assert!(
+                hits.iter().any(|h| h.drawer.content == content),
+                "{query} lost {content}"
+            );
+        }
+        assert!(shares_a_stem("ספר", "הספר"), "the front clitic must carry");
+        // ...and the floor still rejects a fragment, exactly as for Arabic.
+        assert!(!shares_a_stem("ספר", "סו"));
+    }
+
+    /// Vocalised Hebrew must answer an unvocalised query — the same promise
+    /// the Arabic harakat strip already makes.
+    #[test]
+    fn hebrew_points_do_not_split_a_word() {
+        use mnemosyne_core::normalize::search_key;
+        assert_eq!(search_key("סֵפֶר"), search_key("ספר"));
+        assert_eq!(search_key("שָׁלוֹם"), search_key("שלום"));
+        // The maqaf is a hyphen and must keep splitting: stripping it would
+        // glue two words into one token.
+        assert_ne!(search_key("בית־ספר"), search_key("ביתספר"));
+    }
+
+    /// Greek endings substitute rather than append, so containment reaches
+    /// almost none of them. This is the pair class that was dropped — not
+    /// mis-ranked — before `greek_word_family` admitted.
+    #[test]
+    fn greek_inflection_admits_and_latin_is_untouched() {
+        for (query, content) in [
+            ("άνθρωπος", "Το δικαίωμα του ανθρώπου είναι θεμελιώδες"),
+            ("άνθρωπος", "Οι άνθρωποι περίμεναν στην ουρά"),
+            ("πληροφορία", "Ζήτησα πληροφορίες για το δρομολόγιο"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "Ο καιρός ήταν ζεστός χθες", 1))
+                .unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            assert!(
+                hits.iter().any(|h| h.drawer.content == content),
+                "{query} lost {content}"
+            );
+        }
+        assert!(greek_word_family("ανθρωπος", "ανθρωπου"));
+        // The frequency argument that killed Snowball Greek does not reach a
+        // pairwise rule: πολύ/πόλη share three characters, not seven.
+        assert!(!greek_word_family("πολυ", "πολη"));
+        assert!(!greek_word_family("κατασταση", "καταστημα"));
+        // The measured cost, pinned so it stays a known quantity.
+        assert!(
+            greek_word_family("παραδειγμα", "παραδεισος"),
+            "example/paradise is this rule's accepted false pair"
+        );
+        // Latin keeps the rule OFF the admitting channel — this is the whole
+        // reason the predicate is script-scoped.
+        assert!(same_word_family("conversation", "conversion"));
+        assert!(!greek_word_family("conversation", "conversion"));
+        assert!(!greek_word_family("internal", "international"));
     }
 
     /// A single ideograph is one insertion from every bigram containing it.
