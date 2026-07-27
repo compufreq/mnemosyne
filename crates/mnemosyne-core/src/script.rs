@@ -343,7 +343,20 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
         }
         return;
     }
-    let is_ngram = !script.is_logographic();
+    // An n-gram is a FRAGMENT of a word. At exactly two characters the bigram
+    // *is* the whole subrun, so flagging it would deny a real word the exact
+    // slot — and nothing else is emitted at that length, because the
+    // whole-subrun push below is guarded on `> 2`. Hebrew regressed into this
+    // when it left the delimiting class: `גן`, `בן`, `יד`, `עץ`, `שם` were
+    // exact matches as `Script::Other` and became unreachable, measured
+    // DROPPED at realistic drawer length on every channel. Arabic, Korean and
+    // Thai had the same hole latently and never had the exact match to lose.
+    //
+    // This does not re-open the 74.3% defect: a two-character run *inside* a
+    // longer word is still emitted from that word's own subrun with the flag
+    // set, so a fragment never fills the exact slot. Only a subrun that the
+    // delimiters themselves bound reaches here unflagged.
+    let is_ngram = !script.is_logographic() && chars.len() > 2;
     for pair in chars.windows(2) {
         out.tokens.push(format!("{}{}", pair[0], pair[1]));
         out.ngram.push(is_ngram);

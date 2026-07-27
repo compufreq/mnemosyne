@@ -2506,33 +2506,67 @@ fn morph_rule_for(w: &str) -> Option<MorphRule> {
     let mut chars = w.chars();
     let first = chars.next()?;
     let sc = mnemosyne_core::script::script_of(first);
-    if !w.chars().all(|c| mnemosyne_core::script::script_of(c) == sc) {
+    if !w
+        .chars()
+        .all(|c| mnemosyne_core::script::script_of(c) == sc)
+    {
         return None;
     }
     use mnemosyne_core::script::Script;
     Some(match sc {
         // Semitic root-and-pattern. Arabic and Hebrew are the same family and
         // take the same tool; only the weak-letter set differs.
-        Script::Arabic => MorphRule { floor: 3, skeleton: Some(ar_weak), prefix_family: false },
-        Script::Hebrew => MorphRule { floor: 3, skeleton: Some(he_weak), prefix_family: false },
+        Script::Arabic => MorphRule {
+            floor: 3,
+            skeleton: Some(ar_weak),
+            prefix_family: false,
+        },
+        Script::Hebrew => MorphRule {
+            floor: 3,
+            skeleton: Some(he_weak),
+            prefix_family: false,
+        },
         // Han: a character is a morpheme, so unigrams already carry it.
         Script::Han => return None,
         // The other non-delimiting scripts keep the >=3 whole-word rule.
-        s if s.attaches_without_delimiter() => {
-            MorphRule { floor: 3, skeleton: None, prefix_family: false }
-        }
-        // Delimiting scripts. The floor was 8, chosen on English prose; over a
-        // real 50k vocabulary 8 links a mean of 0.09-0.66 words and reaches
-        // almost nothing, which is why Turkish — purely additive, containment
-        // true on every pair — scored 16.7%. Measured at 5: Greek 3.41,
-        // English 3.03, Russian 3.20, Turkish 9.35, German 12.44. At 4 those
-        // become 15.88 / 11.74 / 7.33 / 23.39 / 28.20, and at 3, 45.68 /
-        // 33.33 / 27.49 / 65.55 / 68.47 — German peaking at 1,996 links for a
-        // single query, because German compounds. The knee is between 5 and 4.
+        s if s.attaches_without_delimiter() => MorphRule {
+            floor: 3,
+            skeleton: None,
+            prefix_family: false,
+        },
+        // Delimiting scripts keep the floor of 8.
         //
-        // Known cost of stopping at 5: German umlaut plurals need 4
-        // (`Buch`/`Bücher` is four characters), so they stay out.
-        _ => MorphRule { floor: 5, skeleton: None, prefix_family: true },
+        // I lowered this to 5 and it was wrong. The justification was a
+        // promiscuity measurement — how many words of a real 50k vocabulary a
+        // query links to — which read 3.03 for English at 5 and looked safe.
+        // That instrument counts links; it cannot see whether a link is
+        // CORRECT, and there were no negative controls. Measured against the
+        // real engine afterwards, floor 5 admitted `other`/`mother`,
+        // `count`/`accounting`, `press`/`depression`, `stand`/`understand`,
+        // `cover`/`discovery` and `article`/`particle` — every one a false
+        // admission that did not exist before.
+        //
+        // The 8 is not arbitrary and was not chosen by counting: see
+        // `contains_a_long_word`, which names the 401 extra pairs that taking
+        // 7 instead would have admitted. A precision-justified constant must
+        // not be replaced by a recall-justified one.
+        //
+        // What this costs, and it is real: Turkish is purely additive with
+        // stems of 2-5 characters, so containment is true on every pair and
+        // the floor refuses all of it. Turkish, Hindi, Spanish and English
+        // regress to their prior numbers. Reaching them needs a per-LANGUAGE
+        // floor, which needs a language input, because Turkish and English
+        // share a script and disagree about the right value.
+        //
+        // (retained for the record) The measurement at floor 5 read: Greek
+        // 3.41, English 3.03, Russian 3.20, Turkish 9.35, German 12.44; at 3,
+        // 45.68 / 33.33 / 27.49 / 65.55 / 68.47, German peaking at 1,996
+        // links for one query because German compounds.
+        _ => MorphRule {
+            floor: 8,
+            skeleton: None,
+            prefix_family: true,
+        },
     })
 }
 
@@ -2550,13 +2584,30 @@ fn morph_relation(q: &str, tok: &str) -> bool {
     {
         return false;
     }
+    // Never relate one number to another. `fuzzy_eq` has refused this since
+    // the Arabic digit fold landed — "a digit substitution is not a typo worth
+    // forgiving in a retrieval index" — but that guard sits in the channel
+    // that RANKS. This one is evaluated first and lands in the channel that
+    // ADMITS, so without its own guard it was strictly worse: measured,
+    // `45678` admitted a drawer saying `456789`, `100000` admitted `1000000`,
+    // and `2023` admitted `20231`. Every invoice number, order id and account
+    // number in a vault was one containment away from a wrong drawer.
+    if !q.chars().any(|c| !c.is_numeric()) || !tok.chars().any(|c| !c.is_numeric()) {
+        return false;
+    }
     // The shipped >=3 whole-word rule, unchanged. It self-guards on script, so
     // it is a no-op for the delimiting branch.
     if shares_a_stem(q, tok) {
         return true;
     }
     let (qn, tn) = (q.chars().count(), tok.chars().count());
-    if qn.min(tn) >= rule.floor && (if qn <= tn { tok.contains(q) } else { q.contains(tok) }) {
+    if qn.min(tn) >= rule.floor
+        && (if qn <= tn {
+            tok.contains(q)
+        } else {
+            q.contains(tok)
+        })
+    {
         return true;
     }
     if let Some(weak) = rule.skeleton {
@@ -2713,9 +2764,7 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             }
             // Checked before the general fuzzy scan so containment lands in
             // its own channel rather than being absorbed as approximate.
-            if let Some(j) = qterms.iter().position(|q| {
-                morph_relation(q, tok)
-            }) {
+            if let Some(j) = qterms.iter().position(|q| morph_relation(q, tok)) {
                 tf_morph[i][j] = 1;
                 continue;
             }
@@ -6094,7 +6143,12 @@ mod tests {
     fn report(label: &str, queries: &[String], vocab: &[String], rel: impl Fn(&str, &str) -> bool) {
         let mut counts: Vec<usize> = queries
             .iter()
-            .map(|q| vocab.iter().filter(|w| w.as_str() != q && rel(q, w)).count())
+            .map(|q| {
+                vocab
+                    .iter()
+                    .filter(|w| w.as_str() != q && rel(q, w))
+                    .count()
+            })
             .collect();
         counts.sort_unstable();
         let n = counts.len().max(1);
@@ -6135,7 +6189,12 @@ mod tests {
         for &f in fl {
             report(&format!("{label} floor {f}"), qs, v, move |q, w| {
                 let (qn, tn) = (q.chars().count(), w.chars().count());
-                qn.min(tn) >= f && if qn <= tn { w.contains(q) } else { q.contains(w) }
+                qn.min(tn) >= f
+                    && if qn <= tn {
+                        w.contains(q)
+                    } else {
+                        q.contains(w)
+                    }
             });
         }
     }
@@ -6157,50 +6216,204 @@ mod tests {
         let (tr, trq) = load("tr", latin_char);
         let (ru, ruq) = load("ru", cyrillic_char);
 
-        println!("
-=== ARABIC (vocab {}) ===", ar.len());
-        report("SHIPPED shares_a_stem >=3", &arq, &ar, |q, w| shares_a_stem(q, w));
+        println!(
+            "
+=== ARABIC (vocab {}) ===",
+            ar.len()
+        );
+        report("SHIPPED shares_a_stem >=3", &arq, &ar, |q, w| {
+            shares_a_stem(q, w)
+        });
         report("skeleton equality >=3", &arq, &ar, |q, w| {
             let (a, b) = (skeleton_of(q), skeleton_of(w));
             a.chars().count() >= 3 && a == b
         });
         report("skeleton SUBSEQ >=3", &arq, &ar, |q, w| {
             let (a, b) = (skeleton_of(q), skeleton_of(w));
-            if a.chars().count() < 3 { return false; }
+            if a.chars().count() < 3 {
+                return false;
+            }
             let mut it = b.chars();
             a.chars().all(|c| it.any(|x| x == c))
         });
 
-        println!("
-=== HEBREW (vocab {}) ===", he.len());
-        report("SHIPPED shares_a_stem >=3", &heq, &he, |q, w| shares_a_stem(q, w));
+        println!(
+            "
+=== HEBREW (vocab {}) ===",
+            he.len()
+        );
+        report("SHIPPED shares_a_stem >=3", &heq, &he, |q, w| {
+            shares_a_stem(q, w)
+        });
         report("he-skeleton equality >=3", &heq, &he, |q, w| {
             let (a, b) = (he_skeleton(q), he_skeleton(w));
             a.chars().count() >= 3 && a == b
         });
 
-        println!("
-=== GREEK (vocab {}) ===", el.len());
-        report("SHIPPED greek_word_family", &elq, &el, |q, w| greek_word_family(q, w));
+        println!(
+            "
+=== GREEK (vocab {}) ===",
+            el.len()
+        );
+        report("SHIPPED greek_word_family", &elq, &el, |q, w| {
+            greek_word_family(q, w)
+        });
         floors("contains", &elq, &el, &[3, 4, 5, 6, 8]);
 
-        println!("
-=== ENGLISH (vocab {}) ===", en.len());
+        println!(
+            "
+=== ENGLISH (vocab {}) ===",
+            en.len()
+        );
         floors("contains", &enq, &en, &[3, 4, 5, 6, 8]);
-        report("same_word_family >=7", &enq, &en, |q, w| same_word_family(q, w));
+        report("same_word_family >=7", &enq, &en, |q, w| {
+            same_word_family(q, w)
+        });
 
-        println!("
-=== GERMAN (vocab {}) ===", de.len());
+        println!(
+            "
+=== GERMAN (vocab {}) ===",
+            de.len()
+        );
         floors("contains", &deq, &de, &[3, 4, 5, 6, 8]);
 
-        println!("
-=== TURKISH (vocab {}) ===", tr.len());
+        println!(
+            "
+=== TURKISH (vocab {}) ===",
+            tr.len()
+        );
         floors("contains", &trq, &tr, &[3, 4, 5, 6, 8]);
 
-        println!("
-=== RUSSIAN (vocab {}) ===", ru.len());
+        println!(
+            "
+=== RUSSIAN (vocab {}) ===",
+            ru.len()
+        );
         floors("contains", &ruq, &ru, &[3, 4, 5, 6, 8]);
-        report("same_word_family >=7", &ruq, &ru, |q, w| same_word_family(q, w));
+        report("same_word_family >=7", &ruq, &ru, |q, w| {
+            same_word_family(q, w)
+        });
+    }
+
+    /// Regression: a two-character word in a non-delimiting script.
+    ///
+    /// At exactly two characters the bigram IS the word, and flagging it as an
+    /// n-gram denied it the exact slot while the whole-subrun push was guarded
+    /// on `> 2` — so nothing unflagged was emitted at all. Hebrew fell into
+    /// this when it left the delimiting class.
+    ///
+    /// Pinned at REALISTIC drawer length on purpose. On a one-sentence drawer
+    /// every one of these was admitted by the semantic gate at 0.56-0.58, i.e.
+    /// a hair over `SEMANTIC_ADMISSION_GATE`, so a short-drawer test reports
+    /// "found" while the lexical channels are empty and passes with the fix
+    /// reverted.
+    #[test]
+    fn a_two_character_word_is_a_word_not_a_fragment() {
+        const PAD: &str = " מזג האוויר אתמול היה חם ושמשי מאוד קניתי ירקות טריים \
+             בשוק המרכזי הרכבת איחרה בשעתיים בגלל תקלה אכלנו במסעדה קרובה עם \
+             חברים טובים הים היה שקט והשמש שקעה מוקדם";
+        for (query, content) in [
+            ("גן", "יש גן גדול ליד הבית שלנו"),
+            ("בן", "הוא בן טוב מאוד למשפחה שלו"),
+            ("יד", "הוא הרים את יד ימין באוויר"),
+            ("עץ", "יש עץ גבוה מאוד בחצר האחורית"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            let target = format!("{content}{PAD}");
+            s.upsert(&drawer("w", "r", &target, 0)).unwrap();
+            for (i, f) in ["מזג האוויר נעים", "הרכבת איחרה", "אכלנו במסעדה"]
+                .iter()
+                .enumerate()
+            {
+                s.upsert(&drawer("w", "r", &format!("{f}{PAD}"), i as u32 + 1))
+                    .unwrap();
+            }
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            let hit = hits
+                .iter()
+                .find(|h| h.drawer.content.starts_with(content))
+                .unwrap_or_else(|| panic!("{query} lost its drawer at realistic length"));
+            assert!(
+                hit.lexical_exact > 0.0,
+                "{query}: admitted on {:?}, not the exact channel — the cosine \
+                 gate is carrying it and the fix is not working",
+                hit.semantic
+            );
+        }
+        // A two-character run INSIDE a longer word stays a fragment.
+        let seg = mnemosyne_core::script::segment(&mnemosyne_core::normalize::search_key("הגן"));
+        let whole = seg.tokens.iter().position(|t| t == "הגן").unwrap();
+        assert!(!seg.ngram[whole], "the whole word is not an n-gram");
+        for (i, t) in seg.tokens.iter().enumerate() {
+            if t.chars().count() == 2 {
+                assert!(
+                    seg.ngram[i],
+                    "{t} is a fragment of הגן and must stay flagged"
+                );
+            }
+        }
+    }
+
+    /// Regression: the morph channel must never relate one number to another.
+    /// `fuzzy_eq` has always refused this, but it ranks; this one admits.
+    #[test]
+    fn a_number_is_never_a_morphological_relative() {
+        for (query, content) in [
+            ("45678", "invoice 456789 was paid last week"),
+            ("100000", "the total came to 1000000 exactly"),
+            ("2023", "in 20231 the record was filed"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "the weather was warm today", 1))
+                .unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            // The morph channel must be empty. The drawer may still surface on
+            // the semantic gate, which this fix does not touch — asserting on
+            // absence would test the cosine, not the guard.
+            if let Some(h) = hits.iter().find(|h| h.drawer.content == content) {
+                assert_eq!(
+                    h.lexical_morph, 0.0,
+                    "{query} claimed a morphological relation to {content:?} —                      a digit edit is not morphology"
+                );
+                assert_eq!(h.lexical_exact, 0.0, "{query} claimed exact evidence");
+            }
+        }
+        assert!(!morph_relation("45678", "456789"));
+        assert!(
+            morph_relation("document", "documentation"),
+            "words still relate"
+        );
+    }
+
+    /// Regression: the delimiting floor is 8, and these are the pairs that
+    /// justify it. Lowering it to 5 promoted every one of them from ranking
+    /// into admission — a precision loss bought with a recall-only measurement.
+    #[test]
+    fn the_delimiting_floor_still_refuses_its_named_false_pairs() {
+        for (query, content) in [
+            ("other", "my mother called me yesterday"),
+            ("count", "the accounting team reviewed it"),
+            ("press", "he suffers from depression sometimes"),
+            ("stand", "I cannot understand this at all"),
+            ("cover", "the discovery changed everything"),
+            ("article", "every particle was measured"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "the train arrived late", 1))
+                .unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            if let Some(h) = hits.iter().find(|h| h.drawer.content == content) {
+                assert_eq!(
+                    h.lexical_morph, 0.0,
+                    "{query} claimed a morphological relation to {content:?}"
+                );
+            }
+        }
+        // The relation the floor exists to keep: eight characters, genuine.
+        assert!(morph_relation("document", "documentation"));
+        assert!(!morph_relation("other", "mother"));
     }
 
     /// A single ideograph is one insertion from every bigram containing it.
