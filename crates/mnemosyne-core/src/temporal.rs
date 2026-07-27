@@ -731,8 +731,76 @@ const AR_DUALS: [(&str, Unit); 6] = [
     ("يومان", Unit::Day),
 ];
 
-/// Markers that put what follows in the past. Both are ordinary and both
-/// **precede** the count, which is the structural difference from English.
+/// Whether an [`AR_AGO`] marker at byte offset `off` is putting what follows
+/// into the past, or is the ordinary preposition it also is.
+///
+/// قبل, منذ and مند are temporal and nothing else, so they are taken as read.
+/// من is different in kind: it is one of the commonest words in the language
+/// and its everyday job is partitive or comparative — الخامس من الشهر is "the
+/// fifth OF THE MONTH", أكثر من ثلاثة أيام is "more THAN three days". A unit
+/// noun follows in both, so "a unit follows" is no evidence at all, and taking
+/// it as evidence invents a date out of a sentence that named none. That is
+/// the failure this module exists to prevent, and here it fires on ordinary
+/// prose rather than on some edge case.
+///
+/// من is still genuine — من ثلاثة أيام is "three days ago" in several
+/// registers — so it is guarded rather than dropped, and the guard asks for
+/// **confirming evidence** instead of listing the words that would rule it
+/// out. A blocklist of quantifiers, comparatives and ordinals fabricates on
+/// the first one nobody thought of; an allowlist fails by staying quiet, and a
+/// mention never recorded is a gap where an invented date is a lie. Three
+/// things have to hold together:
+///
+/// * **it opens a clause.** A partitive من always has in front of it the thing
+///   it partitions — the ordinal, the comparative, the counted noun. Cheap and
+///   under-inclusive on purpose, the same trade `month_name_is_deliberate`
+///   makes for English: this misses a mid-sentence كان الاجتماع من ثلاثة أيام;
+/// * **a count reaches a unit** — من ثلاثة أيام, من يومين. Never the bare
+///   من شهر: "from a month" is not "a month ago", and it is exactly the
+///   implied-one reading that قبل شهر deserves which made من الشهر resolve;
+/// * **no range marker closes it.** من X إلى Y is the one competing
+///   construction with the same clause-initial shape, and it names a span of
+///   durations rather than a point in the past.
+fn ar_ago_is_temporal(
+    text: &str,
+    marker: &str,
+    off: usize,
+    next: &str,
+    after: &str,
+    third: &str,
+) -> bool {
+    // The other markers mean nothing but "ago".
+    if marker != "من" {
+        return true;
+    }
+    let before = text[..off].trim_end_matches([' ', '\t']);
+    // Arabic punctuation closes a clause in an Arabic drawer exactly as its
+    // Latin counterpart does in an English one: U+060C ، U+061B ؛ U+061F ؟.
+    let opens_clause = before.is_empty()
+        || before.ends_with([
+            '.', '!', '?', '\n', '\r', ':', ';', ',', '\u{060C}', '\u{061B}', '\u{061F}',
+        ]);
+    let counted = if ar_dual(next).is_some() {
+        !AR_RANGE_TO.contains(&after)
+    } else if ar_count(next).is_some() && ar_unit(after).is_some() {
+        !AR_RANGE_TO.contains(&third)
+    } else {
+        false
+    };
+    opens_clause && counted
+}
+
+/// Range markers: من ثلاثة أيام إلى خمسة أيام is a span of durations, not a
+/// point in the past. Listed because this is the one other construction that
+/// puts a count and a unit directly after a clause-initial من.
+const AR_RANGE_TO: [&str; 4] = ["إلى", "الى", "حتى", "لغاية"];
+
+/// Markers that put what follows in the past. They **precede** the count,
+/// which is the structural difference from English.
+///
+/// The first three mean nothing else. The fourth is an ordinary preposition as
+/// well, and [`ar_ago_is_temporal`] is what keeps it from turning prose into
+/// dates.
 const AR_AGO: [&str; 4] = ["قبل", "منذ", "مند", "من"];
 
 /// Modifiers that follow a unit noun: الأسبوع الماضي is "the week the past".
@@ -1049,7 +1117,9 @@ fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMenti
                 continue;
             }
             mention = Some((TimeKind::Absolute, period));
-        } else if AR_AGO.contains(&w.as_str()) {
+        } else if AR_AGO.contains(&w.as_str())
+            && ar_ago_is_temporal(text, w.as_str(), off, at(i + 1), at(i + 2), at(i + 3))
+        {
             // قبل / منذ + (dual | count + unit)
             if let Some(unit) = ar_dual(at(i + 1)) {
                 consumed = 1;
@@ -1063,7 +1133,16 @@ fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMenti
                     TimeKind::Relative,
                     anchor.and_then(|a| shift_unit(a, unit, -n, ws, false)),
                 ));
-            } else if let Some(unit) = ar_unit(at(i + 1)) {
+            } else if let Some(unit) = ar_unit(at(i + 1)).filter(|_| {
+                // ...but قبل الشهر الماضي is "before LAST month", not "a month
+                // ago". The noun belongs to the modifier behind it: taking it
+                // here resolves one unit back AND strands الماضي, so when the
+                // token after the noun is a modifier, leave the whole phrase to
+                // the period branch on the next pass. English already reads
+                // "before last month" this way — the period is recorded, the
+                // preposition is not.
+                ar_period_step(at(i + 2)).is_none()
+            }) {
                 // قبل شهر — "a month ago", the count implied as one.
                 consumed = 1;
                 mention = Some((
@@ -1414,6 +1493,83 @@ mod tests {
     /// across Egypt, Saudi Arabia and the UAE — its week runs Sat 6 to Fri 12.
     fn ar(text: &str) -> Vec<TimeMention> {
         extract_time_mentions_in(text, parse_anchor("2023-05-08"), Locale::ARABIC)
+    }
+
+    /// `من` is one of the commonest words in Arabic and its everyday job is
+    /// partitive or comparative. Taking a following unit as evidence that it
+    /// means "ago" invented dates out of sentences that named none — the
+    /// failure this module exists to prevent, firing on ordinary prose.
+    ///
+    /// Every row asserts `len()` explicitly: `all(is_none())` is vacuously
+    /// true on an empty vector, so without the count a row proves nothing.
+    /// And the last block is what separates GUARDING `من` from DELETING it —
+    /// with the word simply removed from `AR_AGO` those reads would go silent
+    /// too, and this test would pass over a different, worse fix.
+    #[test]
+    fn min_reads_as_ago_only_where_the_sentence_confirms_it() {
+        // Partitive: "the fifth OF THE MONTH" names no elapsed time.
+        let m = ar("الخامس من الشهر كان يوم عطلة");
+        assert!(
+            m.iter()
+                .all(|x| x.resolved.as_deref() != Some("2023-04-08")),
+            "partitive من fabricated a month-ago date: {:?}",
+            m.iter().map(|x| (&x.text, &x.resolved)).collect::<Vec<_>>()
+        );
+
+        // Comparative: "more THAN three days" is a quantity, not a date.
+        let m = ar("استغرق الأمر أكثر من ثلاثة أيام");
+        assert!(
+            m.iter()
+                .all(|x| x.resolved.as_deref() != Some("2023-05-05")),
+            "comparative من fabricated a three-days-ago date: {:?}",
+            m.iter().map(|x| (&x.text, &x.resolved)).collect::<Vec<_>>()
+        );
+
+        // A bare unit with no count: "from a month" is not "a month ago".
+        // This is the implied-one reading قبل شهر deserves and من does not.
+        let m = ar("من شهر بدأنا العمل");
+        assert!(
+            m.iter()
+                .all(|x| x.resolved.as_deref() != Some("2023-04-08")),
+            "bare من شهر took the implied-one reading: {:?}",
+            m.iter().map(|x| (&x.text, &x.resolved)).collect::<Vec<_>>()
+        );
+
+        // ...and the reads that must SURVIVE. Without these the test cannot
+        // tell a guard from a deletion.
+        let m = ar("من ثلاثة أيام وصلت الرسالة");
+        assert_eq!(
+            m.len(),
+            1,
+            "clause-initial من + count + unit must read: {m:?}"
+        );
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-05-05"));
+        let m = ar("من يومين وصلت الرسالة");
+        assert_eq!(m.len(), 1, "من + dual must read: {m:?}");
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-05-06"));
+
+        // The unambiguous markers are untouched by the guard.
+        let m = ar("قبل ثلاثة أيام وصلت الرسالة");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-05-05"));
+    }
+
+    /// `قبل الشهر الماضي` is "before LAST month". Taking the noun for the
+    /// implied-one reading resolved one unit back AND stranded الماضي.
+    #[test]
+    fn a_past_marker_does_not_swallow_the_noun_of_a_period_phrase() {
+        let m = ar("قبل الشهر الماضي انتهى المشروع");
+        assert_eq!(m.len(), 1, "expected the period, got {m:?}");
+        assert_eq!(m[0].text, "الشهر الماضي");
+        // The unpatched code returned a POINT one month back; the period is
+        // what a reader sees, so assert the range rather than the start.
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-04-01"));
+        assert_eq!(m[0].resolved_end.as_deref(), Some("2023-04-30"));
+
+        // Unmodified nouns keep the implied-one reading.
+        let m = ar("قبل شهر انتهى المشروع");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-04-08"));
     }
 
     #[test]
