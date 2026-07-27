@@ -656,6 +656,7 @@ impl Tenancy {
                     "semantic": h.semantic,
                     "lexical": h.lexical,
                     "lexical_exact": h.lexical_exact,
+                    "lexical_morph": h.lexical_morph,
                 })
             })
             .collect();

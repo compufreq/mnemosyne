@@ -108,9 +108,14 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   XChaCha20-Poly1305); at-rest AAD domains: content, `/emb`, `/tok`
   token matrices, `/pq` index artifacts)
 - `crates/mnemosyne-store` — per-vault SQLite storage, hybrid search (cosine +
-  BM25 fusion; `SearchHit` carries **two** lexical channels — `lexical_exact`
-  decides admission (`hits.retain`), `lexical` ranks and folds in approximate
-  evidence at half weight capped at one per query slot. A fold makes two words
+  BM25 fusion; `SearchHit` carries **three** lexical channels — `lexical_exact`
+  (the drawer said the word) and `lexical_morph` (it holds a word built on it —
+  today only `contains_a_long_word`) both **admit** via `hits.retain`, kept
+  apart so a caller can tell the two claims from each other; `lexical` ranks and
+  discounts both morph and approximate evidence at half weight, capped at one
+  per query slot. On `Fusion::Legacy` and the remote path `lexical_morph` is 0
+  because `lexical_score`'s exact leg is unrestricted substring containment and
+  already counts that relation as exact — a shipped asymmetry, now narrowed. A fold makes two words
   one token and `fuzzy_eq`/`same_word_family` forgive difference, so on one
   channel each of those would be a *membership* decision; `same_word_family`
   is the reachable half of morphology — nearly-a-prefix, ≥7 shared chars,

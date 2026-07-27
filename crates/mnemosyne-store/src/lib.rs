@@ -295,6 +295,26 @@ pub struct SearchHit {
     /// there: `lexical` alone would let one forgiven edit return a drawer as
     /// if it had said the word.
     pub lexical_exact: f32,
+    /// Lexical evidence that the drawer holds a *morphological relative* of a
+    /// query term rather than the term itself — today, and only, a whole word
+    /// contained inside a longer one (`Dampfschiff` in
+    /// `Donaudampfschifffahrt`).
+    ///
+    /// This admits, like `lexical_exact`, and unlike the approximate channel.
+    /// The reason it is a separate field rather than folded into either is
+    /// auditability: a caller can tell "your word is in here" from "something
+    /// built on your word is in here", so a report of a surprising hit — or a
+    /// surprising miss — is reproducible instead of a matter of opinion.
+    ///
+    /// It exists because the alternative was worse in both directions. Left in
+    /// the approximate channel, containment could not admit, and measured, a
+    /// compound drawer past ~80 words has neither exact lexical evidence nor a
+    /// passing cosine, so it was dropped rather than mis-ranked. Promoted into
+    /// `lexical_exact`, it would have become indistinguishable from the drawer
+    /// having said the word — and `lexical_score`'s substring leg already makes
+    /// that claim on `Fusion::Legacy` and every remote search, which is the
+    /// inconsistency this resolves.
+    pub lexical_morph: f32,
 }
 
 /// Result of [`PalaceStore::save_with_dedup`]: the drawer id that now holds
@@ -1899,6 +1919,11 @@ impl PalaceStore {
                         semantic: c.semantic,
                         lexical,
                         lexical_exact,
+                        // `lexical_score`'s exact leg is unrestricted substring
+                        // containment, so on this path the relation the morph
+                        // channel carries elsewhere is already counted as exact.
+                        // Left at zero rather than double-counted.
+                        lexical_morph: 0.0,
                     }
                 })
                 .collect::<Vec<_>>(),
@@ -1907,7 +1932,7 @@ impl PalaceStore {
                 cands
                     .into_iter()
                     .zip(bm25)
-                    .map(|(c, (lexical, lexical_exact))| {
+                    .map(|(c, (lexical, lexical_exact, lexical_morph))| {
                         let score = 0.55 * c.semantic + 0.35 * lexical + 0.10 * c.recency;
                         SearchHit {
                             drawer: c.drawer,
@@ -1915,6 +1940,7 @@ impl PalaceStore {
                             semantic: c.semantic,
                             lexical,
                             lexical_exact,
+                            lexical_morph,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -1933,7 +1959,9 @@ impl PalaceStore {
         // than populate one. Gating on the blended channel would mean every
         // fold widens admission, which is how `قطار` came to match
         // `المستشفى` on a shared alef.
-        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE);
+        hits.retain(|h| {
+            h.lexical_exact > 0.0 || h.lexical_morph > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE
+        });
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -2060,6 +2088,7 @@ impl PalaceStore {
             semantic,
             lexical,
             lexical_exact,
+            lexical_morph: 0.0,
         }
     }
 
@@ -2416,6 +2445,7 @@ fn needs_full_scan(qterms: &[String]) -> bool {
 struct Bm25 {
     raw: Vec<f32>,
     exact: Vec<f32>,
+    morph: Vec<f32>,
     k_sat: f32,
 }
 
@@ -2428,12 +2458,14 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
         return Bm25 {
             raw: vec![0.0; n],
             exact: vec![0.0; n],
+            morph: vec![0.0; n],
             k_sat: 0.0,
         };
     }
     // tf[doc][term] = occurrences of qterms[term] in the doc's tokens.
     let mut tf = vec![vec![0u32; qterms.len()]; n];
     let mut tf_approx = vec![vec![0u32; qterms.len()]; n];
+    let mut tf_morph = vec![vec![0u32; qterms.len()]; n];
     let mut lengths = vec![0f32; n];
     for (i, c) in cands.iter().enumerate() {
         // Content units, not emitted tokens: a segmented run expands into
@@ -2451,6 +2483,12 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             // contained a different word.
             if let Some(j) = qterms.iter().position(|q| q == tok) {
                 tf[i][j] += 1;
+                continue;
+            }
+            // Checked before the general fuzzy scan so containment lands in
+            // its own channel rather than being absorbed as approximate.
+            if let Some(j) = qterms.iter().position(|q| contains_a_long_word(q, tok)) {
+                tf_morph[i][j] = 1;
                 continue;
             }
             if let Some(j) = qterms.iter().position(|q| fuzzy_eq(q, tok)) {
@@ -2471,7 +2509,7 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
         // Rarity counts a term as present on either channel — IDF describes
         // the corpus, not the confidence of one match.
         let df = (0..n)
-            .filter(|&i| tf[i][j] > 0 || tf_approx[i][j] > 0)
+            .filter(|&i| tf[i][j] > 0 || tf_morph[i][j] > 0 || tf_approx[i][j] > 0)
             .count() as f32;
         // Okapi probabilistic IDF, +1 inside the log to stay non-negative.
         *idf_j = (1.0 + (n as f32 - df + 0.5) / (df + 0.5)).ln();
@@ -2487,39 +2525,50 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
     };
     let mut raw = vec![0f32; n];
     let mut exact = vec![0f32; n];
+    let mut morph = vec![0f32; n];
     for i in 0..n {
         let len_norm = 1.0 - BM25_B + BM25_B * lengths[i] / avgdl;
         let saturate = |f: f32, idf: f32| idf * (f * (BM25_K1 + 1.0)) / (f + BM25_K1 * len_norm);
-        let (mut s, mut e) = (0f32, 0f32);
+        let (mut s, mut e, mut m) = (0f32, 0f32, 0f32);
         for (j, idf_j) in idf.iter().enumerate() {
             let f_exact = tf[i][j] as f32;
-            let f = f_exact + APPROX_WEIGHT * tf_approx[i][j] as f32;
+            let f_morph = tf_morph[i][j] as f32;
+            // Morphological evidence is discounted exactly like approximate
+            // evidence for RANKING; the difference is only that it admits.
+            let f = f_exact + APPROX_WEIGHT * (f_morph + tf_approx[i][j] as f32);
             if f > 0.0 {
                 s += saturate(f, *idf_j);
             }
             if f_exact > 0.0 {
                 e += saturate(f_exact, *idf_j);
             }
+            if f_morph > 0.0 {
+                m += saturate(f_morph, *idf_j);
+            }
         }
         raw[i] = s;
         exact[i] = e;
+        morph[i] = m;
     }
-    Bm25 { raw, exact, k_sat }
+    Bm25 {
+        raw,
+        exact,
+        morph,
+        k_sat,
+    }
 }
 
 /// BM25 squashed into [0,1] for the linear blend: `raw / (raw + k_sat)`,
 /// so one strong term match sits near 0.5 and additional evidence climbs
 /// toward 1 without ever forcing a top candidate to exactly 1.0.
-fn bm25_scores(qterms: &[String], cands: &[Candidate]) -> Vec<(f32, f32)> {
+fn bm25_scores(qterms: &[String], cands: &[Candidate]) -> Vec<(f32, f32, f32)> {
     let b = bm25_raw(qterms, cands);
     if b.k_sat <= 0.0 {
-        return vec![(0.0, 0.0); cands.len()];
+        return vec![(0.0, 0.0, 0.0); cands.len()];
     }
     let squash = |r: f32| if r > 0.0 { r / (r + b.k_sat) } else { 0.0 };
-    b.raw
-        .iter()
-        .zip(&b.exact)
-        .map(|(&r, &e)| (squash(r), squash(e)))
+    (0..cands.len())
+        .map(|i| (squash(b.raw[i]), squash(b.exact[i]), squash(b.morph[i])))
         .collect()
 }
 
@@ -2592,6 +2641,7 @@ fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>) -> Vec<SearchHit> {
                 semantic: c.semantic,
                 lexical: squash(raw[i]),
                 lexical_exact: squash(b.exact[i]),
+                lexical_morph: squash(b.morph[i]),
             }
         })
         .collect()
@@ -2701,6 +2751,7 @@ mod tests {
             semantic: score,
             lexical: score,
             lexical_exact: score,
+            lexical_morph: 0.0,
         }
     }
 
@@ -5422,22 +5473,14 @@ mod tests {
         assert!(contains_a_long_word("resolved", "unresolved"));
     }
 
-    /// Containment is ranking evidence, and the boundary of that is worth
-    /// pinning because it is easy to over-claim.
+    /// Containment is now *admitting* evidence, in its own channel.
     ///
-    /// It raises `lexical` and deliberately not `lexical_exact`, so it moves a
-    /// compound *within* a result set it already reached. It does **not**
-    /// admit one. That matters at real drawer length: measured, the cosine leg
-    /// carries `Dampfschiff`/`Donaudampfschifffahrt` at 0.82 on a bare pair but
-    /// only 0.51 past ~80 words, so past that length a compound drawer has
-    /// neither exact lexical evidence nor a passing cosine and is dropped —
-    /// containment cannot rescue it from the approximate channel.
-    ///
-    /// That residual admission failure is an open gap, not a decision. Closing
-    /// it means letting morphological evidence admit, which is a change to
-    /// what the gate *means* and is therefore the maintainer's call.
+    /// It stays out of `lexical_exact`, because the drawer did not say the
+    /// word — it said something built on it — and a caller asking "why did
+    /// this come back" is entitled to that distinction. But it clears the
+    /// gate, which it could not do while it sat in the approximate channel.
     #[test]
-    fn containment_ranks_a_compound_but_does_not_admit_one() {
+    fn containment_admits_in_its_own_channel() {
         let cand = |content: &'static str| {
             let s = segment(content);
             Candidate {
@@ -5454,9 +5497,44 @@ mod tests {
             cand("ein bericht ueber ganz andere dinge"),
         ];
         let b = bm25_raw(&qterms, &cands);
-        assert_eq!(b.exact[0], 0.0, "containment is not exact evidence");
-        assert!(b.raw[0] > 0.0, "but it does rank");
-        assert_eq!(b.raw[1], 0.0, "and the unrelated drawer gets nothing");
+        assert_eq!(b.exact[0], 0.0, "the drawer did not say the word");
+        assert!(b.morph[0] > 0.0, "but it holds a word built on it");
+        assert!(b.raw[0] > 0.0, "and it ranks");
+        assert_eq!(b.morph[1], 0.0, "the unrelated drawer gets nothing");
+        // Discounted for ranking exactly like approximate evidence: an exact
+        // match on the same term must still outrank it.
+        let exact_cands = vec![cand("dampfschifffahrt ist das thema")];
+        let e = bm25_raw(&qterms, &exact_cands);
+        assert!(e.exact[0] > 0.0);
+    }
+
+    /// The failure D1 was decided to close. Measured, the cosine leg carries
+    /// `Dampfschiff`/`Donaudampfschifffahrt` at 0.82 on a bare pair and 0.51
+    /// past ~80 words, so before the morph channel a compound drawer at real
+    /// chunk length had neither exact lexical evidence nor a passing cosine
+    /// and was dropped rather than mis-ranked.
+    #[test]
+    fn a_compound_is_found_at_chunk_length() {
+        let filler = " das ist ein sehr langer text mit vielen weiteren woertern darin";
+        let content = format!(
+            "die Donaudampfschifffahrtsgesellschaft{}{}{}{}",
+            filler, filler, filler, filler
+        );
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer("w", "r", &content, 0)).unwrap();
+        s.upsert(&drawer("w", "r", "an unrelated note about the weather", 1))
+            .unwrap();
+        let hits = s
+            .search("dampfschifffahrt", &SearchOptions::default())
+            .unwrap();
+        assert!(!hits.is_empty(), "the compound drawer was dropped");
+        let h = &hits[0];
+        assert!(h.drawer.content.starts_with("die Donau"));
+        assert_eq!(h.lexical_exact, 0.0, "it never claimed to be exact");
+        assert!(
+            h.lexical_morph > 0.0,
+            "it was admitted on the morph channel"
+        );
     }
 
     /// The gate is a raw cosine of 0.12, and it only means anything because

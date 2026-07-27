@@ -157,7 +157,9 @@ impl PalaceStore {
         }
         // The exact channel, for the same reason as the local gate: an
         // approximate match should reorder a result set, never populate one.
-        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE);
+        hits.retain(|h| {
+            h.lexical_exact > 0.0 || h.lexical_morph > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE
+        });
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
