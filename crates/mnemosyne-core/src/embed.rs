@@ -54,7 +54,7 @@ impl HashEmbedder {
     ///   rescued it — never fired, because its gate is `chars.len() > 3` and
     ///   a two-character query like `北京` never reached it.
     fn tokens(text: &str) -> Vec<String> {
-        let key = crate::normalize::match_key(text).to_lowercase();
+        let key = crate::normalize::search_key(text);
         // Unfiltered on purpose: one-letter words carry meaning here
         // (`vitamin C`), even though BM25 drops them.
         let words = crate::script::segment(&key).tokens;
@@ -220,6 +220,19 @@ mod tests {
                 "{composed:?} vs {decomposed:?}"
             );
         }
+    }
+
+    /// The cosine leg folds too. On a sealed vault it is the only retrieval
+    /// signal, so if it disagreed with the tokenizer about what a word is,
+    /// there would be nothing to fall back to.
+    #[test]
+    fn the_embedder_folds_like_the_tokenizer() {
+        let e = HashEmbedder;
+        assert_eq!(e.embed("كِتَاب"), e.embed("كتاب"), "harakat");
+        assert_eq!(e.embed("İZMİR"), e.embed("izmir"), "Turkish dotted capital");
+        assert_eq!(e.embed("Straße"), e.embed("strasse"), "sharp s");
+        assert_eq!(e.embed("٢٠٢٣"), e.embed("2023"), "Arabic-Indic digits");
+        assert_eq!(e.embed("ΑΘΗΝΑ"), e.embed("Αθήνα"), "Greek tonos");
     }
 
     /// A two-character CJK query never reached the trigram family — its gate

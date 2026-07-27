@@ -232,10 +232,12 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
 mod tests {
     use super::*;
 
-    /// Mirrors `mnemosyne_store::tokenize`: segmentation plus the historical
-    /// byte filter, which is the combination BM25 actually sees.
+    /// Mirrors `mnemosyne_store::tokenize` exactly: the retrieval fold, then
+    /// segmentation, then the historical byte filter. Using bare
+    /// `to_lowercase` here instead would let these tests pass while the
+    /// product behaved differently.
     fn toks(s: &str) -> Vec<String> {
-        segment(&s.to_lowercase())
+        segment(&crate::normalize::search_key(s))
             .tokens
             .into_iter()
             .filter(|t| t.len() > 1)
@@ -346,21 +348,25 @@ mod tests {
     }
 
     #[test]
-    fn delimiting_scripts_tokenize_exactly_as_before() {
-        // The regression guard: English, Russian, Greek and Georgian must be
+    fn latin_cyrillic_and_georgian_tokenize_exactly_as_before() {
+        // The regression guard: English, Russian and Georgian must stay
         // byte-identical to the old split-on-non-alphanumeric behaviour.
         // Note the single-letter Cyrillic words: the historical filter is a
         // *byte* test, so `я` and `в` (2 bytes each) always survived it while
         // a one-letter English word does not. That asymmetry is preserved
         // here deliberately — changing it would silently drop tokens from
         // every existing vault.
+        //
+        // Greek is deliberately gone from this list: its tonos folds now, so
+        // `Αθήνα` yields `αθηνα`. These three rows carry no ё, no loose acute
+        // and rely on Mkhedruli being caseless, which makes the test a
+        // tripwire for any *future* Cyrillic or Georgian fold.
         let cases = [
             (
                 "I went to Beijing yesterday",
                 vec!["went", "to", "beijing", "yesterday"],
             ),
             ("Я поехал в Москву", vec!["я", "поехал", "в", "москву"]),
-            ("Πήγα στην Αθήνα", vec!["πήγα", "στην", "αθήνα"]),
             ("წიგნი მაგიდაზე", vec!["წიგნი", "მაგიდაზე"]),
         ];
         for (input, want) in cases {
@@ -401,12 +407,14 @@ mod tests {
         assert_eq!(segment("i went to beijing").len, 4);
     }
 
-    /// Documented gap, not a fix: Turkish dotted capital İ lowercases to
-    /// `i` + U+0307, which is combining but not Other_Alphabetic, so it
-    /// splits the word and the byte filter eats the fragments. Folding is a
-    /// separate change; this pins the behaviour so it cannot regress silently.
+    /// Was a documented gap, now closed: Turkish dotted capital İ lowercases
+    /// to `i` + U+0307, which is combining but not Other_Alphabetic, so it
+    /// split the word and the byte filter ate the fragments — `İZMİR` gave
+    /// `["zmi"]`. `search_key` strips the mark after lowercasing, which needs
+    /// no Turkic tailoring and so keeps Turkish ı/i minimal pairs.
     #[test]
-    fn turkish_dotted_capital_is_still_broken() {
-        assert_eq!(toks("İZMİR"), vec!["zmi".to_string()]);
+    fn turkish_dotted_capital_folds_to_izmir() {
+        assert_eq!(toks("İZMİR"), vec!["izmir".to_string()]);
+        assert_eq!(toks("İzmir"), toks("izmir"));
     }
 }

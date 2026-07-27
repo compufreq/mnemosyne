@@ -203,8 +203,15 @@ impl PalaceStore {
         // Delete + tombstone + chain advance are one transaction: a crash
         // can't leave a deletion the audit chain never heard about.
         let tag = self.vault.tag(format!("del\x1f{id}").as_bytes());
+        // Resolved before the transaction, removed inside it: the FTS index
+        // must never end up shorter than the table, because under-returning
+        // is what cuts a drawer out of the scan entirely.
+        let fts_seq = self.fts_seq_of(id);
         let tx = self.conn.transaction()?;
         let n = tx.execute("DELETE FROM drawers WHERE id = ?1", params![id])?;
+        if let Some(seq) = fts_seq {
+            let _ = tx.execute("DELETE FROM drawers_fts WHERE rowid = ?1", params![seq]);
+        }
         let anchor = if n > 0 {
             Some(chain_append(
                 &tx,

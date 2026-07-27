@@ -2,6 +2,79 @@
 
 ## Unreleased — temporal fidelity: keep the data we were dropping
 
+- **A key for finding a word, distinct from a key for being it.** `match_key`
+  answers "is this the same text?" — it is what `fingerprint()` compares, so
+  folding there would make 中國 and 中国 the same *drawer* for dedup, and it
+  deliberately pins `ﬁ != fi`, `① != 1` and surviving tatweel. Retrieval asks
+  a different question, and the answer was no in ways that were not bad
+  rankings but empty result sets: `قَرَأتُ الكِتَابَ` shared no whole-word
+  token with `الكتاب`, `İzmir` tokenized to `["zmi"]`, `Straße` never met
+  `strasse`, `٢٠٢٣` never met `2023`, a PDF's `ﬁnal conﬁguration` never met
+  `final configuration`, `ΑΘΗΝΑ` never met `Αθήνα`. `search_key` is that
+  second key, and every tokenizer now uses it — `match_key` is left to dedup.
+  Order carries the design: lowercase precedes the mark strip because `İ` is
+  not a mark and lowercasing *manufactures* the U+0307 the strip removes,
+  which fixes Turkish with no Turkic tailoring and so keeps ı/i minimal pairs.
+  Not blanket NFKC: an alphanumeric-to-alphanumeric guard rejects `ﷺ` (18
+  chars, category So — it would inject a phrase into every religious drawer's
+  term frequency) and `﷼` (Sc, a delimiter that would become letters);
+  CJK radicals invert that guard, being themselves So. Cyrillic gets almost
+  nothing on purpose — only a *loose* stress mark and `ё→е`, since a blanket
+  decompose-and-strip would turn `й` into `и`. ZWSP, ZWNJ and ZWJ are pinned
+  as **not** stripped: ZWSP is Khmer's word delimiter, ZWNJ splitting
+  `کتاب‌ها` yields an exact hit on the stem, and ZWJ is contrastive in
+  Malayalam. Every fold's conflation is pinned by test rather than left to a
+  bug report: على/علي, كتابة/كتابه, Masse/Maße, πότε/ποτέ, все/всё. They are
+  taken because the unmarked spelling is the default register in each of those
+  orthographies — the corpus already made the merge.
+- **Evidence that admits a drawer, kept apart from evidence that ranks it.**
+  The relevance gate was `lexical > 0.0`, and `lexical` mixed a literal term
+  match with a forgiven edit — and now with a fold that makes two spellings
+  one token. On one channel each of those is a *membership* decision, which is
+  how a shared alef made `قطار` match `المستشفى`. `SearchHit` now carries
+  `lexical_exact`; both gates test it, ranking keeps the blend, and
+  approximate evidence contributes at half weight capped at one occurrence per
+  query slot — uncapped, `document documents documented documenting` reaches
+  tf = 4 against a query for `documentation` while the drawer that says
+  `documentation` reaches tf = 1. The cost is deliberate: a drawer whose only
+  relationship to the query is morphological must now also clear
+  `semantic > 0.56`.
+- **Morphology, the half of it that is reachable without a language tag.**
+  `same_word_family` matches when one word is nearly a prefix of the other —
+  ≥7 shared characters, divergent tail ≤3 on the shorter side. That connects
+  `documentation`/`document`, `encryption`/`encrypt`,
+  `Konfiguration`/`Konfigurationen`, `ბიბლიოთეკა`/`ბიბლიოთეკაში`. The
+  thresholds were chosen by what they *reject*: a prefix of 6 would admit the
+  systematic `-tive`/`-tion` class (`positive`/`position`,
+  `creative`/`creation`) which is length-symmetric, plus
+  `сообщение`/`сообщество` and `κατάσταση`/`κατάστημα`. It feeds the
+  approximate channel only, so the three false pairs that survive
+  (`conversation`/`conversion`, `processor`/`procession`,
+  `internal`/`international`) can reorder a result set but never populate one.
+  **Named as gaps, not refusals:** Russian nominal case and Greek inflection
+  (`книга`/`книге` share 4 characters, and so do `город`/`горох` — the
+  information separating them *is* Russian morphology), English short stems
+  (`running`/`run`), German compounds on the BM25 leg (a suffix relation; the
+  embedder's trigrams already carry it on the cosine leg), and stem-rewriting
+  morphology — Arabic broken plurals and Korean conjugation share **zero**
+  n-grams at n=3, 4 or 5, verified by direct computation. Only a multilingual
+  model reaches those.
+- **The FTS prefilter cut the drawer it was meant to find, again.**
+  `drawers_fts` was external-content over raw bytes under unicode61, which
+  folds Latin diacritics and `ς→σ` and nothing else — so it disagreed with
+  folded query terms on ß, ё, Turkish İ and every Arabic mark. Query `izmir`
+  against a drawer saying `İzmir` returned a non-empty *wrong* set, which
+  became `seq IN (...)` and removed the right drawer from the scan and the
+  cosine path with it. The obvious query-side guard is dead code: every term
+  `needs_full_scan` sees has already been folded by `tokenize`. So the index
+  is folded instead — a standalone fts5 table over `search_key(content)`,
+  rebuilt on a `fts_key_version` mismatch, which makes unicode61's token set a
+  superset of ours over the same text: it can over-return, which the scan
+  filters, but never under-return.
+- **A number is never a typo.** After the digit fold `١٠٠٠٠٠` is ASCII
+  `100000`, which cleared the byte gate and fuzzy-matched `200000`, `100001`
+  and `190000`. All-numeric terms no longer forgive an edit, which also closes
+  the same latent hole for numbers that were always Latin-typed.
 - **The embedder was reading a different alphabet than the tokenizer.**
   `HashEmbedder::tokens()` had its own copy of the split and applied neither
   `match_key` nor segmentation, so the cosine leg disagreed with the lexical

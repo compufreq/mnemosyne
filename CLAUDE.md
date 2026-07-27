@@ -16,9 +16,21 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   keep the safety floor; `match_key` = NFC **comparison keys only**, never
   applied to stored bytes — the promise is verbatim and NORMALIZE_VERSION is
   inside the drawer id, so folding on the write path would move every future
-  id; used by `fingerprint()` and **every** tokenizer — including
-  `HashEmbedder::tokens()`, which did not fold until v0.43.0 and so put NFC
-  and NFD spellings of one word in different buckets on the cosine leg),
+  id; used by `fingerprint()` — i.e. **dedup**, which is why folding cannot go
+  here: `中國` and `中国` must not become one drawer. **No tokenizer uses it
+  any more**; they use `search_key`), the retrieval fold (`search_key` — NFC,
+  scoped compatibility expansion, recompose, lowercase, mark strip, letter
+  map, in that order: lowercase must precede the strip because `İ` is not a
+  mark and lowercasing is what *manufactures* the U+0307 the strip removes,
+  which is how `İZMİR` stops tokenizing to `zmi` without any Turkic
+  tailoring. Not blanket NFKC — the alphanumeric-to-alphanumeric guard is what
+  rejects `ﷺ` (So, 18 chars) and `﷼` (Sc, a delimiter that would become
+  letters); CJK radicals invert that guard since they are themselves So.
+  Cyrillic gets only a **loose** stress mark plus `ё→е`, because a blanket
+  decompose-and-strip would turn `й` into `и`; ZWSP/ZWNJ/ZWJ are pinned as
+  **not** stripped — ZWSP is Khmer's word delimiter and ZWJ is contrastive in
+  Malayalam. Every fold's conflation is pinned by test: على/علي, كتابة/كتابه,
+  Masse/Maße, πότε/ποτέ, все/всё),
   script-aware segmentation (`script.rs`: `Script` +
   `segment` — splitting on `!is_alphanumeric` finds no boundary in Han, Kana,
   Hangul, Bopomofo, Arabic, Khmer, Thai, Lao or Myanmar, so a clause became
@@ -87,7 +99,18 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   XChaCha20-Poly1305); at-rest AAD domains: content, `/emb`, `/tok`
   token matrices, `/pq` index artifacts)
 - `crates/mnemosyne-store` — per-vault SQLite storage, hybrid search (cosine +
-  BM25 fusion) + optional cross-encoder rerank + ColBERT late-interaction
+  BM25 fusion; `SearchHit` carries **two** lexical channels — `lexical_exact`
+  decides admission (`hits.retain`), `lexical` ranks and folds in approximate
+  evidence at half weight capped at one per query slot. A fold makes two words
+  one token and `fuzzy_eq`/`same_word_family` forgive difference, so on one
+  channel each of those would be a *membership* decision; `same_word_family`
+  is the reachable half of morphology — nearly-a-prefix, ≥7 shared chars,
+  tail ≤3, which excludes the `-tive`/`-tion` class at exactly 6 and cannot
+  reach Russian case or Arabic broken plurals at all. `drawers_fts` is a
+  **standalone** fts5 table over `search_key(content)`, rebuilt on a
+  `fts_key_version` mismatch: external-content over raw bytes disagreed with
+  folded query terms, and the prefilter is only safe when it finds *nothing*)
+  + optional cross-encoder rerank + ColBERT late-interaction
   stage (latestage.rs: token store, event-driven token-PQ codebook, LUT
   MaxSim), PQ/IVF candidate prefilter for both vault levels (pq.rs primitive,
   pqidx.rs index; both levels scan a load-once RAM code cache, slab-grouped

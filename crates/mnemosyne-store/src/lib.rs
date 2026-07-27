@@ -40,6 +40,12 @@ use mnemosyne_vault::{SecurityLevel, Vault, VaultError};
 /// recall exact; above it the FTS5 candidate cut dominates search cost.
 const DEFAULT_FTS_PREFILTER_MIN: usize = 2048;
 
+/// Bumped whenever `search_key` changes what the FTS index holds, so an
+/// existing vault rebuilds instead of serving a stale token set. `v1` is the
+/// first folded index; a vault written before it has no marker at all and the
+/// external-content triggers are dropped on the way past.
+const FTS_KEY_VERSION: &str = "v1";
+
 /// Embedder identity changes this build performs on its own.
 ///
 /// Only the built-in hash embedder appears here. It is deterministic, local
@@ -872,43 +878,138 @@ impl PalaceStore {
         if !matches!(self.vault.level(), SecurityLevel::HmacOnly) {
             return Ok(false);
         }
+        // A *standalone* fts5 table over folded text, not external-content
+        // over raw `drawers.content`.
+        //
+        // The external-content form indexed raw bytes under unicode61, which
+        // folds Latin diacritics and ς→σ and nothing else. Our query terms are
+        // now `search_key`-folded, so the two disagree on ß, ё, Turkish İ and
+        // every Arabic mark — and the prefilter is only safe when it finds
+        // *nothing*: a non-empty wrong answer becomes `seq IN (...)` and cuts
+        // the right drawer out of the scan and out of the cosine path with it.
+        // Query `izmir` against a drawer saying `İzmir` was exactly that.
+        //
+        // Folding the index instead makes unicode61's token set a superset of
+        // ours over the same text, so it can over-return (the scan filters
+        // that) but never under-return, which was the fatal direction.
+        //
+        // Note the query-side predicate everyone reaches for is dead code:
+        // `needs_full_scan` sees the output of `tokenize`, so every term it
+        // gets is already folded and `search_key(t) != t` is identically false.
         if self
             .conn
-            .execute_batch(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS drawers_fts USING fts5(
-                     content, content='drawers', content_rowid='seq'
-                 );
-                 CREATE TRIGGER IF NOT EXISTS drawers_fts_ai AFTER INSERT ON drawers BEGIN
-                     INSERT INTO drawers_fts(rowid, content) VALUES (new.seq, new.content);
-                 END;
-                 CREATE TRIGGER IF NOT EXISTS drawers_fts_ad AFTER DELETE ON drawers BEGIN
-                     INSERT INTO drawers_fts(drawers_fts, rowid, content)
-                     VALUES ('delete', old.seq, old.content);
-                 END;
-                 CREATE TRIGGER IF NOT EXISTS drawers_fts_au AFTER UPDATE OF content ON drawers BEGIN
-                     INSERT INTO drawers_fts(drawers_fts, rowid, content)
-                     VALUES ('delete', old.seq, old.content);
-                     INSERT INTO drawers_fts(rowid, content) VALUES (new.seq, new.content);
-                 END;",
-            )
+            .execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS drawers_fts USING fts5(text);")
             .is_err()
         {
             return Ok(false);
         }
-        // Backfill drawers written before the index existed (a vault
-        // predating this feature, or a dropped index): an external-content
-        // rebuild re-reads every row from `drawers`.
+        // Storing folded text in clear leaks nothing new: this table only ever
+        // exists for HmacOnly vaults, whose content is already readable.
+        // Sealed vaults never reach here.
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'fts_key_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
         let n_drawers: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))?;
         let n_fts: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))?;
-        if n_fts != n_drawers {
-            self.conn
-                .execute("INSERT INTO drawers_fts(drawers_fts) VALUES('rebuild')", [])?;
+        // Rebuild when the fold changed (a vault indexed by an older build,
+        // including the external-content shape) or when the counts disagree.
+        if stored.as_deref() != Some(FTS_KEY_VERSION) || n_fts != n_drawers {
+            self.rebuild_fts()?;
         }
         Ok(true)
+    }
+
+    /// Drop and repopulate `drawers_fts` from folded content, in one
+    /// transaction. Also removes the external-content triggers an older build
+    /// installed, which would otherwise keep writing raw text into it.
+    fn rebuild_fts(&self) -> Result<(), StoreError> {
+        let rows: Vec<(i64, Vec<u8>, String)> = self
+            .conn
+            .prepare("SELECT seq, content, id FROM drawers ORDER BY seq")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS drawers_fts_ai;
+             DROP TRIGGER IF EXISTS drawers_fts_ad;
+             DROP TRIGGER IF EXISTS drawers_fts_au;
+             DROP TABLE IF EXISTS drawers_fts;
+             CREATE VIRTUAL TABLE drawers_fts USING fts5(text);",
+        )?;
+        {
+            let mut ins = self
+                .conn
+                .prepare("INSERT INTO drawers_fts(rowid, text) VALUES (?1, ?2)")?;
+            for (seq, blob, id) in &rows {
+                // An unreadable row is skipped, not fatal: the prefilter is an
+                // accelerator, and `verify` is what reports damage.
+                let Ok(plain) = self.vault.content_from_rest(id, blob) else {
+                    continue;
+                };
+                let Ok(text) = std::str::from_utf8(&plain) else {
+                    continue;
+                };
+                ins.execute(params![seq, &*mnemosyne_core::normalize::search_key(text)])?;
+            }
+        }
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('fts_key_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![FTS_KEY_VERSION],
+        )?;
+        Ok(())
+    }
+
+    /// Keep `drawers_fts` in step with a written row.
+    ///
+    /// Called from the write path rather than a trigger, because the fold is
+    /// Rust and SQL cannot express it. Advisory: a failure here costs the
+    /// prefilter an entry (the scan still finds the drawer), never the write.
+    pub(crate) fn fts_index(&self, id: &str, content: &str) {
+        if !self.fts {
+            return;
+        }
+        let seq: Option<i64> = self
+            .conn
+            .query_row("SELECT seq FROM drawers WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten();
+        let Some(seq) = seq else { return };
+        let _ = self
+            .conn
+            .execute("DELETE FROM drawers_fts WHERE rowid = ?1", params![seq]);
+        let _ = self.conn.execute(
+            "INSERT INTO drawers_fts(rowid, text) VALUES (?1, ?2)",
+            params![seq, &*mnemosyne_core::normalize::search_key(content)],
+        );
+    }
+
+    /// The `seq` a drawer occupies, for removing its index entry inside the
+    /// same transaction that removes the row — dropping it beforehand would
+    /// leave the index short of the table if that transaction rolled back,
+    /// and under-returning is the one direction the prefilter must never do.
+    pub(crate) fn fts_seq_of(&self, id: &str) -> Option<i64> {
+        if !self.fts {
+            return None;
+        }
+        self.conn
+            .query_row("SELECT seq FROM drawers WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
     }
 
     /// Tune when the BM25 prefilter engages on hmac-only vaults: it runs
@@ -1228,6 +1329,8 @@ impl PalaceStore {
         // Store the late-interaction token matrix (advisory; a drawer
         // without one keeps its fusion rank at rescore time).
         self.late_encode_row(&drawer.id, &drawer.content);
+        // And the folded FTS entry (hmac-only vaults; a no-op otherwise).
+        self.fts_index(&drawer.id, &drawer.content);
         if let Some(cache) = self.emb_cache.borrow_mut().as_mut() {
             cache.insert(drawer.id.clone(), embedding);
         }
@@ -2056,7 +2159,11 @@ fn tokenize(content: &str) -> Vec<String> {
 /// normalization. Segmented runs emit unigrams and bigrams, so `tokens.len()`
 /// is no longer a measure of how much a drawer says.
 fn segment(content: &str) -> mnemosyne_core::script::Segmented {
-    mnemosyne_core::script::segment(&mnemosyne_core::normalize::match_key(content).to_lowercase())
+    // `search_key`, not `match_key`: this is the retrieval key, and it also
+    // lowercases. Both `tokenize` (the query side) and the per-candidate
+    // document side flow through here, so symmetry is structural rather than
+    // something two call sites have to remember.
+    mnemosyne_core::script::segment(&mnemosyne_core::normalize::search_key(content))
 }
 
 /// Whether a query term matches a document token, tolerating one edit.
@@ -2088,7 +2195,70 @@ fn fuzzy_eq(q: &str, tok: &str) -> bool {
         // particles (한국어/한국어는) and 北京/北京市 are unaffected.
         return qn.min(tn) >= 2 && qn.abs_diff(tn) == 1 && within_one_edit(q, tok);
     }
-    q.len() >= 5 && within_one_edit(q, tok)
+    // Never forgive an edit inside a number. `١٠٠٠٠٠` used to be all-Arabic
+    // and took the strict branch above; folded to ASCII `100000` it reaches
+    // here, clears the byte gate, and matches `200000`, `100001` and
+    // `190000`. A digit substitution is not a typo worth forgiving in a
+    // retrieval index, and this closes the same latent hole for numbers that
+    // were always Latin-typed.
+    if !q.chars().any(|c| !c.is_numeric()) {
+        return false;
+    }
+    if q.len() >= 5 && within_one_edit(q, tok) {
+        return true;
+    }
+    same_word_family(q, tok)
+}
+
+/// One word is nearly a prefix of the other — the reachable half of
+/// morphology, without needing to know anyone's language.
+///
+/// This connects suffix and agglutinative inflection: `documentation` to
+/// `document`/`documented`/`documents`/`documenting`, `encryption` to
+/// `encrypt`, Georgian `ბიბლიოთეკა` to `ბიბლიოთეკაში`, German
+/// `Konfiguration` to `Konfigurationen`.
+///
+/// The two thresholds are both load-bearing and both were chosen by what they
+/// reject. A prefix of **7** is what excludes the systematic English
+/// `-tive`/`-tion` class, which sits at exactly 6 and is length-symmetric so a
+/// length-difference bound would not catch it: `positive`/`position`,
+/// `relative`/`relation`, `creative`/`creation`, `transfer`/`transform`,
+/// `personal`/`personnel`. It also rejects the Slavic and Greek false friends
+/// a 6 would admit — `сообщение` (message) / `сообщество` (community),
+/// `κατάσταση` (situation) / `κατάστημα` (shop). Bounding the divergent tail
+/// on the **shorter** side rejects `представление` (idea) /
+/// `представитель` (representative), which shares 8.
+///
+/// Three false pairs survive and are the accepted cost: `conversation` /
+/// `conversion`, `processor` / `procession`, `internal` / `international`.
+/// They feed the **approximate** channel only, so none of them can admit a
+/// drawer — they can only move one inside a result set that already cleared
+/// the exact gate. That containment is why the channel split had to land
+/// first.
+///
+/// What this does not reach, and no prefix rule can: Russian nominal case
+/// (`книга`/`книге` share 4, and so do `город`/`горох`), Greek `πόλη`/`πόλεων`
+/// (3), English short stems (`running`/`run` — `run` is 3 characters), and
+/// German compounds, where `Dampfschiff` is a *suffix* of
+/// `Donaudampfschifffahrt` (the embedder's character trigrams already carry
+/// that one on the cosine leg). Stem-rewriting morphology — Arabic broken
+/// plurals, Korean conjugation — shares no contiguous surface at all.
+fn same_word_family(q: &str, tok: &str) -> bool {
+    // Delimiting scripts only. A bigram token from Han, Arabic or Thai must
+    // never reach a character-prefix rule.
+    if !q
+        .chars()
+        .all(|c| !mnemosyne_core::script::script_of(c).attaches_without_delimiter())
+    {
+        return false;
+    }
+    let (qn, tn) = (q.chars().count(), tok.chars().count());
+    let shared = q
+        .chars()
+        .zip(tok.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    shared >= 7 && qn.min(tn) - shared <= 3
 }
 
 /// True when a query cannot be served by the FTS5 prefilter.
@@ -2321,7 +2491,10 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> (f32, f32
     }
     // Same canonical fold the query terms went through, or a drawer written
     // with a different but equivalent encoding cannot match its own words.
-    let lower = mnemosyne_core::normalize::match_key(content).to_lowercase();
+    // Both legs of this function must fold, or the substring leg desynchronises
+    // from the term leg: a folded query term cannot be found in an unfolded
+    // haystack, and under the relevance gate that *drops* the drawer.
+    let lower = mnemosyne_core::normalize::search_key(content);
     let words: Vec<&str> = lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -2337,8 +2510,8 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> (f32, f32
     let n = qterms.len() as f32;
     let mut score = (exact + APPROX_WEIGHT * approx) / n;
     let mut score_exact = exact / n;
-    let phrase = mnemosyne_core::normalize::match_key(raw_query.trim()).to_lowercase();
-    if phrase.len() > 3 && lower.contains(&phrase) {
+    let phrase = mnemosyne_core::normalize::search_key(raw_query.trim());
+    if phrase.len() > 3 && lower.contains(&*phrase) {
         // A literal phrase hit is exact evidence on both channels.
         score = (score + 0.5).min(1.0);
         score_exact = (score_exact + 0.5).min(1.0);
@@ -4490,13 +4663,11 @@ mod tests {
         s.upsert(&drawer("w", "r", "memory written before the index", 0))
             .unwrap();
         drop(s);
-        // Simulate a vault predating the feature (or a dropped index).
+        // Simulate a vault predating the feature (or a dropped index). The
+        // external-content triggers an older build installed are gone now, so
+        // dropping the table is the whole simulation.
         let conn = Connection::open(dir.path().join("vaults/test/palace.db")).unwrap();
-        conn.execute_batch(
-            "DROP TRIGGER drawers_fts_ai; DROP TRIGGER drawers_fts_ad;
-             DROP TRIGGER drawers_fts_au; DROP TABLE drawers_fts;",
-        )
-        .unwrap();
+        conn.execute_batch("DROP TABLE drawers_fts;").unwrap();
         drop(conn);
         let mgr = VaultManager::open(dir.path(), None).unwrap();
         let mut s = PalaceStore::open(mgr.unlock("test").unwrap()).unwrap();
@@ -4967,9 +5138,152 @@ mod tests {
         assert!(!migrated, "the override should have skipped the migration");
     }
 
+    /// The reachable half of morphology, and the boundary of it.
+    #[test]
+    fn a_word_family_is_matched_but_a_false_friend_is_not() {
+        for (a, b) in [
+            ("documentation", "document"),
+            ("documentation", "documented"),
+            ("documentation", "documents"),
+            ("encryption", "encrypt"),
+            ("konfiguration", "konfigurationen"),
+            ("ბიბლიოთეკა", "ბიბლიოთეკაში"),
+        ] {
+            assert!(same_word_family(a, b), "{a} / {b} should be a family");
+        }
+        // Rejected: the systematic English -tive/-tion class sits at a shared
+        // prefix of exactly 6, and is length-symmetric.
+        for (a, b) in [
+            ("positive", "position"),
+            ("relative", "relation"),
+            ("creative", "creation"),
+            ("transfer", "transform"),
+            ("personal", "personnel"),
+            ("сообщение", "сообщество"),
+            ("κατάσταση", "κατάστημα"),
+            ("представление", "представитель"),
+        ] {
+            assert!(!same_word_family(a, b), "{a} / {b} must not be a family");
+        }
+        // Out of reach, and honestly so: these share too little.
+        for (a, b) in [("книга", "книге"), ("running", "run"), ("πόλη", "πόλεων")]
+        {
+            assert!(!same_word_family(a, b), "{a} / {b}");
+        }
+        // A bigram token from a segmented script must never reach this rule.
+        assert!(!same_word_family("北京", "北京市"));
+    }
+
+    /// A family match must never *admit* a drawer — only reorder one already
+    /// admitted. This is the containment the channel split exists to provide.
+    #[test]
+    fn a_family_match_is_approximate_evidence_only() {
+        let cand = |content: &'static str| {
+            let s = segment(content);
+            Candidate {
+                drawer: drawer("w", "r", content, 0),
+                semantic: 0.0,
+                recency: 0.0,
+                units: s.len as f32,
+                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+            }
+        };
+        let qterms = tokenize("documentation");
+        let cands = vec![
+            cand("the document was filed"),
+            cand("read the documentation"),
+        ];
+        let b = bm25_raw(&qterms, &cands);
+        assert_eq!(b.exact[0], 0.0, "a family match is not exact evidence");
+        assert!(b.raw[0] > 0.0, "but it does contribute to ranking");
+        assert!(b.exact[1] > 0.0, "the literal term is exact evidence");
+        assert!(b.raw[1] > b.raw[0], "exact must outrank family");
+    }
+
+    /// End to end, through the real gate: a query typed the plain way must
+    /// find a drawer written the marked way, in each script the fold covers.
+    #[test]
+    fn a_folded_query_finds_the_unfolded_drawer() {
+        let cases = [
+            ("izmir", "the meeting in İzmir was short"),
+            ("strasse", "sie wohnt in der Hauptstraße"),
+            ("lodz", "a postcard from Łódź"),
+            ("2023", "التقرير عن سنة ٢٠٢٣"),
+            ("الكتاب", "قَرَأتُ الكِتَابَ أمس"),
+            ("kitab", "قرأت الكتاب أمس"),  // control: must NOT match
+            ("athina", "Πήγα στην Αθήνα"), // control: must NOT match
+        ];
+        for (query, content) in cases {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            let found = hits.iter().any(|h| h.drawer.content == content);
+            // The two controls are transliterations, not folds — the fold is a
+            // comparison key, never a romanizer, and nothing here should
+            // suggest otherwise.
+            let expect = !matches!(query, "kitab" | "athina");
+            assert_eq!(found, expect, "query {query:?} against {content:?}");
+        }
+    }
+
+    /// Greek within its own script, which the fold does cover.
+    #[test]
+    fn an_unaccented_greek_query_finds_its_drawer() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        s.upsert(&drawer("w", "r", "Πήγα στην Αθήνα το καλοκαίρι", 0))
+            .unwrap();
+        let hits = s.search("ΑΘΗΝΑ", &SearchOptions::default()).unwrap();
+        assert!(!hits.is_empty(), "all-caps Greek found nothing");
+    }
+
+    /// The prefilter used to hold raw content under unicode61, which folds
+    /// Latin diacritics and nothing else. It returned a non-empty *wrong* set
+    /// for `izmir` and cut the right drawer out of the scan. The index is
+    /// folded now, so its token set is a superset of ours over the same text:
+    /// it can over-return, which the scan filters, but never under-return.
+    #[test]
+    fn the_folded_fts_index_finds_folded_queries() {
+        // Unchanged: a pure-Latin query still uses the prefilter.
+        assert!(!needs_full_scan(&["strasse".to_string()]));
+
+        let dir = TempDir::new().unwrap();
+        let mgr = VaultManager::open(dir.path(), None).unwrap();
+        let vault = mgr.create("test", SecurityLevel::HmacOnly).unwrap();
+        let mut s = PalaceStore::open(vault).unwrap();
+        assert!(s.fts);
+        s.set_fts_prefilter_min(Some(1));
+        s.upsert(&drawer("w", "r", "das Büro in der Hauptstraße", 0))
+            .unwrap();
+        s.upsert(&drawer("w", "r", "the meeting in İzmir was short", 1))
+            .unwrap();
+        for i in 2..8 {
+            s.upsert(&drawer("w", "r", &format!("filler note {i}"), i))
+                .unwrap();
+        }
+        for (query, want) in [("strasse", "Hauptstraße"), ("izmir", "İzmir")] {
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            assert!(
+                hits.iter().any(|h| h.drawer.content.contains(want)),
+                "prefilter cut the drawer for {query:?}"
+            );
+        }
+    }
+
     /// A single ideograph is one insertion from every bigram containing it.
     #[test]
     fn a_one_character_query_is_not_a_wildcard() {
+        // And a number is never a typo: after the digit fold `١٠٠٠٠٠` is
+        // ASCII and would otherwise clear the byte gate and match `200000`.
+        assert!(!fuzzy_eq("100000", "200000"));
+        assert!(!fuzzy_eq("100000", "100001"));
+        assert!(
+            fuzzy_eq("kubernetes", "kubernets"),
+            "words still forgive one"
+        );
+    }
+
+    #[test]
+    fn a_one_character_cjk_query_is_not_a_wildcard() {
         assert!(!fuzzy_eq("北", "东北"));
         assert!(!fuzzy_eq("北", "北虎"));
         // Two-character terms keep the particle/suffix tolerance.
