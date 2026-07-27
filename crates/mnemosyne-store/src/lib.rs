@@ -249,7 +249,16 @@ pub struct SearchHit {
     pub drawer: Drawer,
     pub score: f32,
     pub semantic: f32,
+    /// Lexical evidence for ranking: exact term matches plus approximate ones
+    /// (folds, one-edit tolerance, morphological families) at reduced weight.
     pub lexical: f32,
+    /// Lexical evidence that the drawer literally contains a query term.
+    ///
+    /// This is what decides admission. Approximate evidence is a guess, and a
+    /// guess should move a drawer within a result set rather than put it
+    /// there: `lexical` alone would let one forgiven edit return a drawer as
+    /// if it had said the word.
+    pub lexical_exact: f32,
 }
 
 /// Result of [`PalaceStore::save_with_dedup`]: the drawer id that now holds
@@ -1734,13 +1743,14 @@ impl PalaceStore {
             Fusion::Legacy => cands
                 .into_iter()
                 .map(|c| {
-                    let lexical = lexical_score(&qterms, query, &c.drawer.content);
+                    let (lexical, lexical_exact) = lexical_score(&qterms, query, &c.drawer.content);
                     let score = 0.55 * c.semantic + 0.35 * lexical + 0.10 * c.recency;
                     SearchHit {
                         drawer: c.drawer,
                         score,
                         semantic: c.semantic,
                         lexical,
+                        lexical_exact,
                     }
                 })
                 .collect::<Vec<_>>(),
@@ -1749,13 +1759,14 @@ impl PalaceStore {
                 cands
                     .into_iter()
                     .zip(bm25)
-                    .map(|(c, lexical)| {
+                    .map(|(c, (lexical, lexical_exact))| {
                         let score = 0.55 * c.semantic + 0.35 * lexical + 0.10 * c.recency;
                         SearchHit {
                             drawer: c.drawer,
                             score,
                             semantic: c.semantic,
                             lexical,
+                            lexical_exact,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -1765,8 +1776,16 @@ impl PalaceStore {
 
         // Relevance gate: an unrelated record still scores ~0.35 from the
         // neutral cosine midpoint + recency alone. Require actual evidence —
-        // a lexical match or a clearly positive semantic signal.
-        hits.retain(|h| h.lexical > 0.0 || h.semantic > 0.56);
+        // the drawer literally contains a query term, or the cosine is
+        // clearly positive.
+        //
+        // Deliberately the *exact* channel. Approximate evidence — a fold
+        // that made two spellings one token, a forgiven edit, a shared word
+        // family — is a guess, and a guess should reorder a result set rather
+        // than populate one. Gating on the blended channel would mean every
+        // fold widens admission, which is how `قطار` came to match
+        // `المستشفى` on a shared alef.
+        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > 0.56);
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -1884,7 +1903,7 @@ impl PalaceStore {
         let qterms: Vec<String> = tokenize(query);
         let emb = self.embedder.embed(&drawer.content);
         let semantic = ((cosine(qvec, &emb) + 1.0) / 2.0).clamp(0.0, 1.0);
-        let lexical = lexical_score(&qterms, query, &drawer.content);
+        let (lexical, lexical_exact) = lexical_score(&qterms, query, &drawer.content);
         let recency = recency_boost(&drawer.meta.filed_at, OffsetDateTime::now_utc());
         let score = 0.55 * semantic + 0.35 * lexical + 0.10 * recency;
         SearchHit {
@@ -1892,6 +1911,7 @@ impl PalaceStore {
             score,
             semantic,
             lexical,
+            lexical_exact,
         }
     }
 
@@ -2095,13 +2115,36 @@ fn needs_full_scan(qterms: &[String]) -> bool {
 /// saturation constant when squashing raw scores into [0,1]. Term matching
 /// carries the same one-typo tolerance (5+ char terms) as lexical search,
 /// so a misspelled query still contributes.
-fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
+/// BM25 over a candidate set, kept in two channels.
+///
+/// `raw` is for ranking and blends both kinds of evidence. `exact` counts
+/// only tokens that literally equal a query term, and it is what decides
+/// *admission* — see the relevance gate in `search`. The distinction matters
+/// because approximate evidence is a guess: a fold makes two spellings one
+/// token, and `fuzzy_eq` forgives an edit. Under a single channel each of
+/// those is a membership decision, so a drawer whose only relationship to the
+/// query is a typo away gets returned as if it had said the word.
+struct Bm25 {
+    raw: Vec<f32>,
+    exact: Vec<f32>,
+    k_sat: f32,
+}
+
+/// Approximate evidence counts, but never as much as saying the word.
+const APPROX_WEIGHT: f32 = 0.5;
+
+fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
     let n = cands.len();
     if n == 0 || qterms.is_empty() {
-        return (vec![0.0; n], 0.0);
+        return Bm25 {
+            raw: vec![0.0; n],
+            exact: vec![0.0; n],
+            k_sat: 0.0,
+        };
     }
     // tf[doc][term] = occurrences of qterms[term] in the doc's tokens.
     let mut tf = vec![vec![0u32; qterms.len()]; n];
+    let mut tf_approx = vec![vec![0u32; qterms.len()]; n];
     let mut lengths = vec![0f32; n];
     for (i, c) in cands.iter().enumerate() {
         // Content units, not emitted tokens: a segmented run expands into
@@ -2122,7 +2165,12 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
                 continue;
             }
             if let Some(j) = qterms.iter().position(|q| fuzzy_eq(q, tok)) {
-                tf[i][j] += 1;
+                // Capped at one per slot. Uncapped, a drawer saying
+                // `document documents documented documenting` reaches tf = 4
+                // on a query for `documentation` while a drawer that says
+                // `documentation` once reaches tf = 1 — the approximate
+                // channel would outscore the exact one.
+                tf_approx[i][j] = 1;
             }
         }
     }
@@ -2131,7 +2179,11 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
     let mut present_idf_sum = 0f32;
     let mut present_cnt = 0f32;
     for (j, idf_j) in idf.iter_mut().enumerate() {
-        let df = tf.iter().filter(|row| row[j] > 0).count() as f32;
+        // Rarity counts a term as present on either channel — IDF describes
+        // the corpus, not the confidence of one match.
+        let df = (0..n)
+            .filter(|&i| tf[i][j] > 0 || tf_approx[i][j] > 0)
+            .count() as f32;
         // Okapi probabilistic IDF, +1 inside the log to stay non-negative.
         *idf_j = (1.0 + (n as f32 - df + 0.5) / (df + 0.5)).ln();
         if df > 0.0 {
@@ -2145,30 +2197,40 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> (Vec<f32>, f32) {
         0.0
     };
     let mut raw = vec![0f32; n];
-    for (i, raw_i) in raw.iter_mut().enumerate() {
+    let mut exact = vec![0f32; n];
+    for i in 0..n {
         let len_norm = 1.0 - BM25_B + BM25_B * lengths[i] / avgdl;
-        let mut s = 0f32;
+        let saturate = |f: f32, idf: f32| idf * (f * (BM25_K1 + 1.0)) / (f + BM25_K1 * len_norm);
+        let (mut s, mut e) = (0f32, 0f32);
         for (j, idf_j) in idf.iter().enumerate() {
-            let f = tf[i][j] as f32;
+            let f_exact = tf[i][j] as f32;
+            let f = f_exact + APPROX_WEIGHT * tf_approx[i][j] as f32;
             if f > 0.0 {
-                s += idf_j * (f * (BM25_K1 + 1.0)) / (f + BM25_K1 * len_norm);
+                s += saturate(f, *idf_j);
+            }
+            if f_exact > 0.0 {
+                e += saturate(f_exact, *idf_j);
             }
         }
-        *raw_i = s;
+        raw[i] = s;
+        exact[i] = e;
     }
-    (raw, k_sat)
+    Bm25 { raw, exact, k_sat }
 }
 
 /// BM25 squashed into [0,1] for the linear blend: `raw / (raw + k_sat)`,
 /// so one strong term match sits near 0.5 and additional evidence climbs
 /// toward 1 without ever forcing a top candidate to exactly 1.0.
-fn bm25_scores(qterms: &[String], cands: &[Candidate]) -> Vec<f32> {
-    let (raw, k_sat) = bm25_raw(qterms, cands);
-    if k_sat <= 0.0 {
-        return vec![0.0; cands.len()];
+fn bm25_scores(qterms: &[String], cands: &[Candidate]) -> Vec<(f32, f32)> {
+    let b = bm25_raw(qterms, cands);
+    if b.k_sat <= 0.0 {
+        return vec![(0.0, 0.0); cands.len()];
     }
-    raw.iter()
-        .map(|&r| if r > 0.0 { r / (r + k_sat) } else { 0.0 })
+    let squash = |r: f32| if r > 0.0 { r / (r + b.k_sat) } else { 0.0 };
+    b.raw
+        .iter()
+        .zip(&b.exact)
+        .map(|(&r, &e)| (squash(r), squash(e)))
         .collect()
 }
 
@@ -2212,7 +2274,8 @@ fn ranks_desc_positive(vals: &[f32]) -> Vec<Option<usize>> {
 /// only rank positions. `lexical` is reported as the squashed BM25 so the
 /// caller's relevance gate treats it exactly like the BM25 blend.
 fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>) -> Vec<SearchHit> {
-    let (raw, k_sat) = bm25_raw(qterms, &cands);
+    let b = bm25_raw(qterms, &cands);
+    let (raw, k_sat) = (b.raw, b.k_sat);
     let sem: Vec<f32> = cands.iter().map(|c| c.semantic).collect();
     let rec: Vec<f32> = cands.iter().map(|c| c.recency).collect();
     let sem_rank = ranks_desc(&sem);
@@ -2227,16 +2290,19 @@ fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>) -> Vec<SearchHit> {
                 score += 1.0 / (RRF_K + r as f32);
             }
             score += 0.10 * (1.0 / (RRF_K + rec_rank[i] as f32));
-            let lexical = if k_sat > 0.0 && raw[i] > 0.0 {
-                raw[i] / (raw[i] + k_sat)
-            } else {
-                0.0
+            let squash = |r: f32| {
+                if k_sat > 0.0 && r > 0.0 {
+                    r / (r + k_sat)
+                } else {
+                    0.0
+                }
             };
             SearchHit {
                 drawer: c.drawer,
                 score,
                 semantic: c.semantic,
-                lexical,
+                lexical: squash(raw[i]),
+                lexical_exact: squash(b.exact[i]),
             }
         })
         .collect()
@@ -2246,9 +2312,12 @@ fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>) -> Vec<SearchHit> {
 /// Terms of 5+ chars also match with one typo (edit distance 1) — the
 /// port of mempalace's spellcheck extra, done at query time instead of
 /// with a dictionary.
-fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> f32 {
+///
+/// Returns `(lexical, lexical_exact)` on the same split as `bm25_raw`: the
+/// substring leg is exact evidence, the one-edit leg is not.
+fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> (f32, f32) {
     if qterms.is_empty() {
-        return 0.0;
+        return (0.0, 0.0);
     }
     // Same canonical fold the query terms went through, or a drawer written
     // with a different but equivalent encoding cannot match its own words.
@@ -2257,16 +2326,24 @@ fn lexical_score(qterms: &[String], raw_query: &str, content: &str) -> f32 {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    let matched = qterms
-        .iter()
-        .filter(|t| lower.contains(t.as_str()) || words.iter().any(|w| fuzzy_eq(t, w)))
-        .count() as f32;
-    let mut score = matched / qterms.len() as f32;
+    let (mut exact, mut approx) = (0f32, 0f32);
+    for t in qterms {
+        if lower.contains(t.as_str()) {
+            exact += 1.0;
+        } else if words.iter().any(|w| fuzzy_eq(t, w)) {
+            approx += 1.0;
+        }
+    }
+    let n = qterms.len() as f32;
+    let mut score = (exact + APPROX_WEIGHT * approx) / n;
+    let mut score_exact = exact / n;
     let phrase = mnemosyne_core::normalize::match_key(raw_query.trim()).to_lowercase();
     if phrase.len() > 3 && lower.contains(&phrase) {
+        // A literal phrase hit is exact evidence on both channels.
         score = (score + 0.5).min(1.0);
+        score_exact = (score_exact + 0.5).min(1.0);
     }
-    score
+    (score, score_exact)
 }
 
 /// True when `a` and `b` are within Levenshtein distance 1 (single
@@ -2331,6 +2408,7 @@ mod tests {
             score,
             semantic: score,
             lexical: score,
+            lexical_exact: score,
         }
     }
 
@@ -5023,18 +5101,59 @@ mod tests {
             "got {:?}",
             hits[0].drawer.content
         );
-        // And directly: two distinct query terms must both find evidence.
-        let both = tokenize("kubernets kubernetes both forms here");
+        // And directly, on the channels: a drawer holding both surface forms
+        // fills two exact slots, and the blended channel can only ever be at
+        // least the exact one.
+        let cand = |content: &'static str| {
+            let s = segment(content);
+            Candidate {
+                drawer: drawer("w", "r", content, 0),
+                semantic: 0.0,
+                recency: 0.0,
+                units: s.len as f32,
+                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+            }
+        };
         let qterms = tokenize("kubernets kubernetes");
-        let cands = vec![Candidate {
-            drawer: drawer("w", "r", "kubernets kubernetes both forms here", 0),
-            semantic: 0.0,
-            recency: 0.0,
-            units: both.len() as f32,
-            tokens: both,
-        }];
-        let (raw, _) = bm25_raw(&qterms, &cands);
-        assert!(raw[0] > 0.0);
+        let cands = vec![
+            cand("kubernets kubernetes both forms here"),
+            cand("kubernets kubernets twice the typo"),
+        ];
+        let b = bm25_raw(&qterms, &cands);
+        assert!(b.exact[0] > 0.0, "both forms are literally present");
+        assert!(b.raw[0] >= b.exact[0], "blended is never below exact");
+        assert!(
+            b.raw[0] > b.raw[1],
+            "two exact terms must outscore one term seen twice: {:?} vs {:?}",
+            b.raw[0],
+            b.raw[1]
+        );
+    }
+
+    /// The whole point of the split: approximate evidence alone must not
+    /// admit a drawer, only reorder ones already admitted.
+    #[test]
+    fn approximate_evidence_alone_does_not_admit_a_drawer() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        // `kubernets` is one edit from `kubernetes`, so the drawer is
+        // approximate evidence and nothing more.
+        s.upsert(&drawer("w", "r", "the kubernets cluster note", 0))
+            .unwrap();
+        s.set_fusion(Fusion::Bm25);
+        let hits = s.search("kubernetes", &SearchOptions::default()).unwrap();
+        for h in &hits {
+            assert!(
+                h.lexical_exact > 0.0 || h.semantic > 0.56,
+                "admitted on approximate evidence alone: exact={} sem={}",
+                h.lexical_exact,
+                h.semantic
+            );
+        }
+        // And when it *is* admitted (the hash embedder shares trigrams here),
+        // the approximate channel still shows up in ranking.
+        if let Some(h) = hits.first() {
+            assert!(h.lexical >= h.lexical_exact);
+        }
     }
 
     #[test]

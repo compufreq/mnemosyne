@@ -155,7 +155,9 @@ impl PalaceStore {
             }
             hits.push(self.score_drawer(drawer, query, &qvec));
         }
-        hits.retain(|h| h.lexical > 0.0 || h.semantic > 0.56);
+        // The exact channel, for the same reason as the local gate: an
+        // approximate match should reorder a result set, never populate one.
+        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > 0.56);
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)

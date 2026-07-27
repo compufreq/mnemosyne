@@ -655,6 +655,7 @@ impl Tenancy {
                     "score": h.score,
                     "semantic": h.semantic,
                     "lexical": h.lexical,
+                    "lexical_exact": h.lexical_exact,
                 })
             })
             .collect();
