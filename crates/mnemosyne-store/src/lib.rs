@@ -2456,6 +2456,123 @@ fn contains_a_long_word(q: &str, tok: &str) -> bool {
 /// `Donaudampfschifffahrt` (the embedder's character trigrams already carry
 /// that one on the cosine leg). Stem-rewriting morphology — Arabic broken
 /// plurals, Korean conjugation — shares no contiguous surface at all.
+/// The per-script morphological rules — the "right tool per language" made
+/// explicit, with every value carrying the promiscuity that chose it.
+///
+/// Promiscuity = how many of a real 50k vocabulary one query links to
+/// (hermitdave/FrequencyWords 2018, top-500 queries against the full list).
+/// It is the instrument that produced the 74.3% figure, and it needs no
+/// relatedness labels: a relation that reaches a large slice of the lexicon is
+/// unsafe whether or not any single pair is defensible.
+struct MorphRule {
+    /// Minimum characters on the shorter side for whole-word containment.
+    floor: usize,
+    /// Consonantal-skeleton equality, and the weak letters it removes.
+    /// Equality, never subsequence: measured, skeleton-subsequence on Arabic
+    /// reaches mean 64.81 words — **worse than the 49.44 of the containment
+    /// rule already shipped** — while equality reaches 6.67.
+    skeleton: Option<fn(char) -> bool>,
+    /// Whether a >=7 shared prefix admits (Greek only — see `greek_word_family`).
+    prefix_family: bool,
+}
+
+/// Arabic weak letters: alef, waw, yeh.
+fn ar_weak(c: char) -> bool {
+    matches!(c as u32, 0x0627 | 0x0648 | 0x064A)
+}
+/// Hebrew matres lectionis: alef, waw, yod. `ה` is deliberately absent — it is
+/// the definite article and a frequent radical, so stripping it would merge a
+/// clitic into the stem it attaches to.
+fn he_weak(c: char) -> bool {
+    matches!(c as u32, 0x05D0 | 0x05D5 | 0x05D9)
+}
+
+/// Minimum consonants left after the weak letters go. Measured on Arabic, the
+/// class size by skeleton length is 75.3 / 38.2 / 14.3 / 6.4 for lengths
+/// 1/2/3/4 — so a floor of 3 keeps the strong triliteral roots and refuses the
+/// collapse. It is a floor on the SKELETON, not on the word: that distinction
+/// is what lets `كتاب`/`كتب` through while refusing `بيت`→`بت`.
+const SKELETON_FLOOR: usize = 3;
+
+fn skeleton_with(w: &str, weak: fn(char) -> bool) -> String {
+    w.chars().filter(|c| !weak(*c)).collect()
+}
+
+/// Which rule applies to this word, by the script of its characters.
+///
+/// Returns `None` for mixed-script words and for Han, where a character is
+/// already a morpheme and no stem relation applies.
+fn morph_rule_for(w: &str) -> Option<MorphRule> {
+    let mut chars = w.chars();
+    let first = chars.next()?;
+    let sc = mnemosyne_core::script::script_of(first);
+    if !w.chars().all(|c| mnemosyne_core::script::script_of(c) == sc) {
+        return None;
+    }
+    use mnemosyne_core::script::Script;
+    Some(match sc {
+        // Semitic root-and-pattern. Arabic and Hebrew are the same family and
+        // take the same tool; only the weak-letter set differs.
+        Script::Arabic => MorphRule { floor: 3, skeleton: Some(ar_weak), prefix_family: false },
+        Script::Hebrew => MorphRule { floor: 3, skeleton: Some(he_weak), prefix_family: false },
+        // Han: a character is a morpheme, so unigrams already carry it.
+        Script::Han => return None,
+        // The other non-delimiting scripts keep the >=3 whole-word rule.
+        s if s.attaches_without_delimiter() => {
+            MorphRule { floor: 3, skeleton: None, prefix_family: false }
+        }
+        // Delimiting scripts. The floor was 8, chosen on English prose; over a
+        // real 50k vocabulary 8 links a mean of 0.09-0.66 words and reaches
+        // almost nothing, which is why Turkish — purely additive, containment
+        // true on every pair — scored 16.7%. Measured at 5: Greek 3.41,
+        // English 3.03, Russian 3.20, Turkish 9.35, German 12.44. At 4 those
+        // become 15.88 / 11.74 / 7.33 / 23.39 / 28.20, and at 3, 45.68 /
+        // 33.33 / 27.49 / 65.55 / 68.47 — German peaking at 1,996 links for a
+        // single query, because German compounds. The knee is between 5 and 4.
+        //
+        // Known cost of stopping at 5: German umlaut plurals need 4
+        // (`Buch`/`Bücher` is four characters), so they stay out.
+        _ => MorphRule { floor: 5, skeleton: None, prefix_family: true },
+    })
+}
+
+/// Does a morphological relation hold — the admitting half of the morph
+/// channel, dispatched per script.
+fn morph_relation(q: &str, tok: &str) -> bool {
+    let Some(rule) = morph_rule_for(q) else {
+        return false;
+    };
+    // Both sides must be the same script, or a rule chosen for one language
+    // decides a pair from another.
+    if morph_rule_for(tok).is_none()
+        || mnemosyne_core::script::script_of(tok.chars().next().unwrap_or(' '))
+            != mnemosyne_core::script::script_of(q.chars().next().unwrap_or(' '))
+    {
+        return false;
+    }
+    // The shipped >=3 whole-word rule, unchanged. It self-guards on script, so
+    // it is a no-op for the delimiting branch.
+    if shares_a_stem(q, tok) {
+        return true;
+    }
+    let (qn, tn) = (q.chars().count(), tok.chars().count());
+    if qn.min(tn) >= rule.floor && (if qn <= tn { tok.contains(q) } else { q.contains(tok) }) {
+        return true;
+    }
+    if let Some(weak) = rule.skeleton {
+        let a = skeleton_with(q, weak);
+        if a.chars().count() >= SKELETON_FLOOR && a == skeleton_with(tok, weak) {
+            return true;
+        }
+    }
+    // Greek only, and `greek_word_family` is what enforces that: measured,
+    // this rule links a mean of 0.16 English words and 0.58 Russian ones, so
+    // it is not the promiscuity that keeps it off Latin — it is that Latin's
+    // false pairs (`conversation`/`conversion`) are the named, documented cost
+    // of the rule, and Greek's beneficiaries are nine real paradigm forms.
+    rule.prefix_family && greek_word_family(q, tok)
+}
+
 /// `same_word_family`, but admitting — and only for Greek.
 ///
 /// Greek inflection **substitutes** its endings rather than appending them, so
@@ -2597,7 +2714,7 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             // Checked before the general fuzzy scan so containment lands in
             // its own channel rather than being absorbed as approximate.
             if let Some(j) = qterms.iter().position(|q| {
-                contains_a_long_word(q, tok) || shares_a_stem(q, tok) || greek_word_family(q, tok)
+                morph_relation(q, tok)
             }) {
                 tf_morph[i][j] = 1;
                 continue;
@@ -5937,6 +6054,153 @@ mod tests {
         assert!(same_word_family("conversation", "conversion"));
         assert!(!greek_word_family("conversation", "conversion"));
         assert!(!greek_word_family("internal", "international"));
+    }
+
+    // ---- TEMPORARY promiscuity measurement, delete after reading ----------
+    //
+    // How much of a REAL vocabulary does one query link to under each
+    // relation? That is the instrument that produced the 74.3% Arabic figure,
+    // so these numbers land on a comparable scale. It needs no relatedness
+    // labels: a relation that links a query to a large fraction of the
+    // lexicon is unsafe whether or not any individual pair is defensible.
+    //
+    // Corpus: hermitdave/FrequencyWords 2018 (OpenSubtitles-derived), MIT,
+    // 50,000 words with counts, top-N by frequency used as queries.
+
+    fn load_words(path: &str, script_ok: fn(char) -> bool) -> Vec<String> {
+        let raw = std::fs::read_to_string(path).expect("word list");
+        raw.lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .map(|w| mnemosyne_core::normalize::search_key(w).to_string())
+            .filter(|w| w.chars().count() >= 2 && w.chars().all(script_ok))
+            .collect()
+    }
+
+    fn arabic_char(c: char) -> bool {
+        matches!(c as u32, 0x0620..=0x064A | 0x0671..=0x06D3)
+    }
+    fn greek_char(c: char) -> bool {
+        matches!(c as u32, 0x0370..=0x03FF | 0x1F00..=0x1FFF)
+    }
+
+    fn skeleton_of(s: &str) -> String {
+        s.chars()
+            .filter(|c| !matches!(*c as u32, 0x0627 | 0x0648 | 0x064A))
+            .collect()
+    }
+
+    /// Report the distribution of "how many vocabulary words does this query
+    /// link to", over the top `qn` queries against the whole vocabulary.
+    fn report(label: &str, queries: &[String], vocab: &[String], rel: impl Fn(&str, &str) -> bool) {
+        let mut counts: Vec<usize> = queries
+            .iter()
+            .map(|q| vocab.iter().filter(|w| w.as_str() != q && rel(q, w)).count())
+            .collect();
+        counts.sort_unstable();
+        let n = counts.len().max(1);
+        let total: usize = counts.iter().sum();
+        let mean = total as f64 / n as f64;
+        let median = counts[n / 2];
+        let p95 = counts[(n * 95 / 100).min(n - 1)];
+        let max = *counts.last().unwrap_or(&0);
+        let zero = counts.iter().filter(|c| **c == 0).count();
+        println!(
+            "  {label:<34} mean {mean:>8.2}  median {median:>5}  p95 {p95:>6}  max {max:>6}  \
+             links-nothing {:>4.1}%  of-vocab {:>6.3}%",
+            100.0 * zero as f64 / n as f64,
+            100.0 * mean / vocab.len() as f64
+        );
+    }
+
+    fn latin_char(c: char) -> bool {
+        c.is_alphabetic() && (c as u32) < 0x0250
+    }
+    fn cyrillic_char(c: char) -> bool {
+        matches!(c as u32, 0x0400..=0x04FF)
+    }
+    fn hebrew_char(c: char) -> bool {
+        matches!(c as u32, 0x05D0..=0x05EA)
+    }
+
+    /// Hebrew matres lectionis. `ה` is deliberately NOT stripped: it is the
+    /// definite article and a frequent real consonant, so removing it would
+    /// merge the clitic with the stem it attaches to.
+    fn he_skeleton(s: &str) -> String {
+        s.chars()
+            .filter(|c| !matches!(*c as u32, 0x05D0 | 0x05D5 | 0x05D9))
+            .collect()
+    }
+
+    fn floors(label: &str, qs: &[String], v: &[String], fl: &[usize]) {
+        for &f in fl {
+            report(&format!("{label} floor {f}"), qs, v, move |q, w| {
+                let (qn, tn) = (q.chars().count(), w.chars().count());
+                qn.min(tn) >= f && if qn <= tn { w.contains(q) } else { q.contains(w) }
+            });
+        }
+    }
+
+    #[test]
+    #[ignore = "measurement, needs testdata/*_50k.txt"]
+    fn measure_relation_promiscuity() {
+        const QN: usize = 500;
+        let load = |f: &str, ok: fn(char) -> bool| {
+            let v = load_words(&format!("testdata/{f}_50k.txt"), ok);
+            let q: Vec<String> = v.iter().take(QN).cloned().collect();
+            (v, q)
+        };
+        let (ar, arq) = load("ar", arabic_char);
+        let (el, elq) = load("el", greek_char);
+        let (he, heq) = load("he", hebrew_char);
+        let (en, enq) = load("en", latin_char);
+        let (de, deq) = load("de", latin_char);
+        let (tr, trq) = load("tr", latin_char);
+        let (ru, ruq) = load("ru", cyrillic_char);
+
+        println!("
+=== ARABIC (vocab {}) ===", ar.len());
+        report("SHIPPED shares_a_stem >=3", &arq, &ar, |q, w| shares_a_stem(q, w));
+        report("skeleton equality >=3", &arq, &ar, |q, w| {
+            let (a, b) = (skeleton_of(q), skeleton_of(w));
+            a.chars().count() >= 3 && a == b
+        });
+        report("skeleton SUBSEQ >=3", &arq, &ar, |q, w| {
+            let (a, b) = (skeleton_of(q), skeleton_of(w));
+            if a.chars().count() < 3 { return false; }
+            let mut it = b.chars();
+            a.chars().all(|c| it.any(|x| x == c))
+        });
+
+        println!("
+=== HEBREW (vocab {}) ===", he.len());
+        report("SHIPPED shares_a_stem >=3", &heq, &he, |q, w| shares_a_stem(q, w));
+        report("he-skeleton equality >=3", &heq, &he, |q, w| {
+            let (a, b) = (he_skeleton(q), he_skeleton(w));
+            a.chars().count() >= 3 && a == b
+        });
+
+        println!("
+=== GREEK (vocab {}) ===", el.len());
+        report("SHIPPED greek_word_family", &elq, &el, |q, w| greek_word_family(q, w));
+        floors("contains", &elq, &el, &[3, 4, 5, 6, 8]);
+
+        println!("
+=== ENGLISH (vocab {}) ===", en.len());
+        floors("contains", &enq, &en, &[3, 4, 5, 6, 8]);
+        report("same_word_family >=7", &enq, &en, |q, w| same_word_family(q, w));
+
+        println!("
+=== GERMAN (vocab {}) ===", de.len());
+        floors("contains", &deq, &de, &[3, 4, 5, 6, 8]);
+
+        println!("
+=== TURKISH (vocab {}) ===", tr.len());
+        floors("contains", &trq, &tr, &[3, 4, 5, 6, 8]);
+
+        println!("
+=== RUSSIAN (vocab {}) ===", ru.len());
+        floors("contains", &ruq, &ru, &[3, 4, 5, 6, 8]);
+        report("same_word_family >=7", &ruq, &ru, |q, w| same_word_family(q, w));
     }
 
     /// A single ideograph is one insertion from every bigram containing it.
