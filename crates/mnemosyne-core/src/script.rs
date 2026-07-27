@@ -165,6 +165,21 @@ pub struct Segmented {
     /// hash embedder has always indexed one-letter words and must keep doing
     /// so or `vitamin C` stops being distinguishable from `vitamin D`.
     pub tokens: Vec<String>,
+    /// Parallel to `tokens`: true where the token is a character n-gram from a
+    /// script that attaches without a delimiter and is **not** logographic —
+    /// Arabic, Kana, Hangul, Khmer, Thai, Lao, Myanmar, Bopomofo.
+    ///
+    /// The caller needs this because such an n-gram is not a word and must not
+    /// be treated as one. Measured on a real 50k-word Arabic corpus, matching
+    /// bigram-to-bigram by literal equality admitted **74.3%** of a 120-drawer
+    /// vault on a single query, against 6.9% for Greek through the same code —
+    /// a shared two-character substring in an unvocalised abjad is not
+    /// evidence that a drawer is about the query. It is the failure
+    /// `is_logographic` documents for unigrams, one n-gram order lower.
+    ///
+    /// Han is deliberately excluded: there a character *is* a morpheme, so its
+    /// unigrams and bigrams are words and are marked `false`.
+    pub ngram: Vec<bool>,
     /// Content units, counting a segmented run **once per character** rather
     /// than once per emitted n-gram.
     ///
@@ -247,6 +262,7 @@ fn runs(text: &str) -> Vec<&str> {
 pub fn segment(text: &str) -> Segmented {
     let mut out = Segmented {
         tokens: Vec::new(),
+        ngram: Vec::new(),
         len: 0,
     };
     for run in runs(text) {
@@ -285,6 +301,7 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
     if !script.attaches_without_delimiter() {
         out.len += 1;
         out.tokens.push(sub.to_string());
+        out.ngram.push(false);
         return;
     }
     let chars: Vec<char> = sub.chars().collect();
@@ -297,6 +314,7 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
     if script.is_logographic() {
         for ch in &chars {
             out.tokens.push(ch.to_string());
+            out.ngram.push(false);
         }
     }
     if chars.len() < 2 {
@@ -305,18 +323,23 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
         // 2 bytes and cleared the old byte filter.
         if !script.is_logographic() {
             out.tokens.push(sub.to_string());
+            out.ngram.push(false);
         }
         return;
     }
+    let is_ngram = !script.is_logographic();
     for pair in chars.windows(2) {
         out.tokens.push(format!("{}{}", pair[0], pair[1]));
+        out.ngram.push(is_ngram);
     }
     // The whole unit, when it is longer than the bigrams already emitted. For
     // Arabic this is the word itself and carries the strongest signal; for a
     // CJK run it is the clause, which is what the old tokenizer produced, so
     // nothing that matched before stops matching.
     if chars.len() > 2 {
+        // The whole subrun is the word, whatever the script.
         out.tokens.push(sub.to_string());
+        out.ngram.push(false);
     }
 }
 
@@ -535,6 +558,7 @@ mod tests {
                 .flat_map(|r| {
                     let mut s = Segmented {
                         tokens: Vec::new(),
+                        ngram: Vec::new(),
                         len: 0,
                     };
                     let mut st = 0usize;
@@ -577,6 +601,38 @@ mod tests {
     #[test]
     fn tibetan_is_left_alone() {
         assert_eq!(script_of('\u{0F40}'), Script::Other);
+    }
+
+    /// Every token carries a flag, and they stay in step.
+    #[test]
+    fn the_ngram_flags_line_up_with_the_tokens() {
+        for input in [
+            "قرأت الكتاب أمس",
+            "我昨天去了北京参加会议",
+            "한국어는 어렵다",
+            "ฉันไปกรุงเทพ",
+            "i went to beijing",
+            "नमस्ते",
+        ] {
+            let s = segment(&crate::normalize::search_key(input));
+            assert_eq!(s.tokens.len(), s.ngram.len(), "{input:?}");
+        }
+    }
+
+    /// An Arabic bigram is not a word. A Han bigram is.
+    #[test]
+    fn only_non_logographic_ngrams_are_flagged() {
+        let ar = segment(&crate::normalize::search_key("كتاب"));
+        for (t, ng) in ar.tokens.iter().zip(&ar.ngram) {
+            // The whole word is not an n-gram; its bigrams are.
+            assert_eq!(*ng, t.chars().count() < 4, "{t}");
+        }
+        // Han: a character is a morpheme, so nothing is flagged.
+        let zh = segment(&crate::normalize::search_key("北京参加"));
+        assert!(zh.ngram.iter().all(|f| !f), "Han must not be flagged");
+        // Delimiting scripts emit whole words only.
+        let en = segment(&crate::normalize::search_key("beijing"));
+        assert!(en.ngram.iter().all(|f| !f));
     }
 
     /// `segment` itself filters nothing — a one-letter word reaches the

@@ -45,6 +45,13 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   and the fragments matched unrelated words (`दिल` inside `दिल्ली`). Blanket-
   joining is wrong — in a non-delimiting script `emit` makes bigrams and a
   consonant+mark bigram is not injective, so Thai `เก่า`/`ก่อน` would share `ก่`.
+  `Segmented.ngram` marks which tokens are n-grams from a non-delimiting,
+  **non-logographic** script; the store refuses them the EXACT slot, because a
+  shared two-character substring in an unvocalised abjad is not evidence —
+  measured, bigram-to-bigram equality admitted **74.3%** of a real Arabic
+  corpus on one query, against 6.9% for Greek. Whole-word containment
+  (`shares_a_stem`, ≥3 chars) carries the clitics instead, into `lexical_morph`.
+  Han is not flagged: there a character is a morpheme.
   Latin/digit subruns stay whole so a brand name inside CJK survives;
   delimiting scripts — Latin, Cyrillic, Greek, Georgian, Tibetan — are
   untouched, their defects being folding and morphology, which n-grams do not

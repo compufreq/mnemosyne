@@ -1886,22 +1886,29 @@ impl PalaceStore {
             };
             let semantic = ((cosine(&qvec, &emb) + 1.0) / 2.0).clamp(0.0, 1.0);
             let recency = recency_boost(&drawer.meta.filed_at, now);
-            let (tokens, units) = if self.fusion == Fusion::Legacy {
-                (Vec::new(), 0.0)
+            let (tokens, ngram, units) = if self.fusion == Fusion::Legacy {
+                (Vec::new(), Vec::new(), 0.0)
             } else {
                 let s = segment(&drawer.content);
                 let units = s.len as f32;
                 // Same minimum-length rule the query side applies, so term
                 // matching stays symmetric rather than relying on a one-byte
-                // token happening never to match anything.
-                let tokens: Vec<String> = s.tokens.into_iter().filter(|t| t.len() > 1).collect();
-                (tokens, units)
+                // token happening never to match anything. The n-gram flags
+                // are filtered in step with the tokens they describe.
+                let (tokens, ngram): (Vec<String>, Vec<bool>) = s
+                    .tokens
+                    .into_iter()
+                    .zip(s.ngram)
+                    .filter(|(t, _)| t.len() > 1)
+                    .unzip();
+                (tokens, ngram, units)
             };
             cands.push(Candidate {
                 drawer,
                 semantic,
                 recency,
                 tokens,
+                ngram,
                 units,
             });
         }
@@ -2198,6 +2205,8 @@ struct Candidate {
     semantic: f32,
     recency: f32,
     tokens: Vec<String>,
+    /// Parallel to `tokens` — see `script::Segmented::ngram`.
+    ngram: Vec<bool>,
     /// Content units — see `script::Segmented::len`. Not `tokens.len()`,
     /// which counts the n-gram expansion.
     units: f32,
@@ -2318,6 +2327,44 @@ fn fuzzy_eq(q: &str, tok: &str) -> bool {
 /// lands in the approximate channel, so none of it can admit a drawer.
 /// Critically, it creates none of gap (a)'s false friends: containment is
 /// false for `город`/`горох`, `книга`/`книге` and `positive`/`position`.
+/// One word contains the other, in a script that attaches without a delimiter
+/// and is not logographic.
+///
+/// This is `contains_a_long_word`'s counterpart for Arabic, Kana, Hangul,
+/// Khmer, Thai, Lao and Myanmar. It is what carries `كتاب` to `الكتاب` and
+/// `مكتبة` to `بالمكتبة` once bigram-to-bigram equality stops being exact
+/// evidence: the whole-subrun tokens still contain one another, which is a
+/// contiguous chain over the stem rather than one shared fragment.
+///
+/// Three characters on the shorter side, not eight. The delimiting rule can
+/// afford eight because a Latin word carries its own boundaries; an Arabic
+/// stem is commonly three letters and there is no shorter honest floor. The
+/// cost is measured and real: at three characters this relation runs at 0.519
+/// morphological precision, against 0.820 at four and 0.911 at five. It routes
+/// to `tf_morph`, so it is labelled and discounted — but it does admit, and
+/// that number is the reason the channel exists.
+fn shares_a_stem(q: &str, tok: &str) -> bool {
+    let non_delimiting_word = |s: &str| {
+        s.chars().all(|c| {
+            let sc = mnemosyne_core::script::script_of(c);
+            sc.attaches_without_delimiter() && !sc.is_logographic()
+        })
+    };
+    if !non_delimiting_word(q) || !non_delimiting_word(tok) {
+        return false;
+    }
+    const MIN_CHARS: usize = 3;
+    let (qn, tn) = (q.chars().count(), tok.chars().count());
+    if qn.min(tn) < MIN_CHARS {
+        return false;
+    }
+    if qn <= tn {
+        tok.contains(q)
+    } else {
+        q.contains(tok)
+    }
+}
+
 fn contains_a_long_word(q: &str, tok: &str) -> bool {
     // Delimiting scripts only — a bigram token from Han, Arabic or Thai must
     // never reach a substring rule.
@@ -2472,7 +2519,14 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
         // unigrams plus bigrams, and charging that to document length would
         // penalise precisely the drawers segmentation exists to reach.
         lengths[i] = c.units;
-        for tok in &c.tokens {
+        for (ti, tok) in c.tokens.iter().enumerate() {
+            // An n-gram is a fragment, not a word. Letting one fill the exact
+            // slot by literal equality is what let a single shared
+            // two-character substring admit a drawer: measured, 74.3% of a
+            // real Arabic corpus on one query, against 6.9% for Greek through
+            // the same code. Han is not flagged, because there a character is
+            // a morpheme.
+            let is_ngram = c.ngram.get(ti).copied().unwrap_or(false);
             // A token fills at most one query-term slot, and an *exact* match
             // outranks a fuzzy one wherever the two compete. Taking the first
             // match of either kind let an earlier fuzzy term steal a token
@@ -2481,15 +2535,29 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             // `دفاتر` — literally present — kept df = 0 and therefore maximal
             // IDF for a term that occurs. The document was scored as if it
             // contained a different word.
-            if let Some(j) = qterms.iter().position(|q| q == tok) {
-                tf[i][j] += 1;
-                continue;
+            if !is_ngram {
+                if let Some(j) = qterms.iter().position(|q| q == tok) {
+                    tf[i][j] += 1;
+                    continue;
+                }
             }
             // Checked before the general fuzzy scan so containment lands in
             // its own channel rather than being absorbed as approximate.
-            if let Some(j) = qterms.iter().position(|q| contains_a_long_word(q, tok)) {
+            if let Some(j) = qterms
+                .iter()
+                .position(|q| contains_a_long_word(q, tok) || shares_a_stem(q, tok))
+            {
                 tf_morph[i][j] = 1;
                 continue;
+            }
+            // A bigram meeting the same bigram is the weakest evidence there
+            // is — real, but the same grade that makes كريم (a name) surface
+            // كرم (generosity) at rank 1. It ranks; it does not admit.
+            if is_ngram {
+                if let Some(j) = qterms.iter().position(|q| q == tok) {
+                    tf_approx[i][j] = 1;
+                    continue;
+                }
             }
             if let Some(j) = qterms.iter().position(|q| fuzzy_eq(q, tok)) {
                 // Capped at one per slot. Uncapped, a drawer saying
@@ -5483,12 +5551,20 @@ mod tests {
     fn containment_admits_in_its_own_channel() {
         let cand = |content: &'static str| {
             let s = segment(content);
+            let units = s.len as f32;
+            let (tokens, ngram): (Vec<String>, Vec<bool>) = s
+                .tokens
+                .into_iter()
+                .zip(s.ngram)
+                .filter(|(t, _)| t.len() > 1)
+                .unzip();
             Candidate {
                 drawer: drawer("w", "r", content, 0),
                 semantic: 0.0,
                 recency: 0.0,
-                units: s.len as f32,
-                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+                units,
+                tokens,
+                ngram,
             }
         };
         let qterms = tokenize("dampfschifffahrt");
@@ -5573,12 +5649,20 @@ mod tests {
     fn a_family_match_is_approximate_evidence_only() {
         let cand = |content: &'static str| {
             let s = segment(content);
+            let units = s.len as f32;
+            let (tokens, ngram): (Vec<String>, Vec<bool>) = s
+                .tokens
+                .into_iter()
+                .zip(s.ngram)
+                .filter(|(t, _)| t.len() > 1)
+                .unzip();
             Candidate {
                 drawer: drawer("w", "r", content, 0),
                 semantic: 0.0,
                 recency: 0.0,
-                units: s.len as f32,
-                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+                units,
+                tokens,
+                ngram,
             }
         };
         let qterms = tokenize("documentation");
@@ -5660,6 +5744,70 @@ mod tests {
                 "prefilter cut the drawer for {query:?}"
             );
         }
+    }
+
+    /// The defect this closes: a shared two-character substring was literal
+    /// equality, so it filled the EXACT slot and admitted. Measured on a real
+    /// 50k-word Arabic corpus, one content word admitted **74.3%** of a
+    /// 120-drawer vault — against 6.9% for Greek through the same code, a
+    /// 10.8x difference produced by one line in `script.rs`.
+    #[test]
+    fn an_arabic_bigram_alone_does_not_admit() {
+        let (_d, mut s) = store(SecurityLevel::Sealed);
+        // None of these is about a book. Each shares at most a bigram with the
+        // query, which is exactly the evidence that used to admit.
+        let unrelated = [
+            "ذهبت إلى المستشفى أمس",
+            "الطقس جميل اليوم في المدينة",
+            "اشتريت قطارا صغيرا لابني",
+            "كريم رجل كريم مع أصدقائه",
+            "مصرف كبير في وسط البلد",
+        ];
+        for (i, c) in unrelated.iter().enumerate() {
+            s.upsert(&drawer("w", "r", c, i as u32)).unwrap();
+        }
+        s.upsert(&drawer("w", "r", "قرأت الكتاب أمس في البيت", 99))
+            .unwrap();
+
+        let hits = s.search("الكتاب", &SearchOptions::default()).unwrap();
+        assert!(!hits.is_empty(), "the drawer that says it must come back");
+        assert!(hits[0].drawer.content.contains("الكتاب"));
+        // The whole point: the rest of the vault is no longer admitted on a
+        // shared fragment. Before this change every one of these cleared the
+        // gate in the exact channel.
+        assert!(
+            hits.len() <= 2,
+            "admitted {} of 6 drawers on one query: {:?}",
+            hits.len(),
+            hits.iter().map(|h| &h.drawer.content).collect::<Vec<_>>()
+        );
+    }
+
+    /// ...and the clitic cases it must not cost. These are carried by
+    /// whole-word containment, not by bigram equality.
+    #[test]
+    fn arabic_clitics_survive_the_tightening() {
+        for (query, content) in [
+            ("كتاب", "قرأت الكتاب أمس"),
+            ("مكتبة", "ذهبت إلى بالمكتبة صباحا"),
+            ("معلم", "حضر المعلمون الاجتماع"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            s.upsert(&drawer("w", "r", content, 0)).unwrap();
+            s.upsert(&drawer("w", "r", "الطقس جميل اليوم", 1)).unwrap();
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            assert!(
+                hits.iter().any(|h| h.drawer.content == content),
+                "{query} lost {content}"
+            );
+        }
+        // The relation is morphological, not exact — it says so.
+        assert!(shares_a_stem("كتاب", "الكتاب"));
+        assert!(!shares_a_stem("كتاب", "كت"), "a bigram is below the floor");
+        // A name and a common noun sharing one bigram is not a stem relation.
+        assert!(!shares_a_stem("كريم", "كرم"));
+        // Delimiting scripts are untouched by this rule.
+        assert!(!shares_a_stem("running", "run"));
     }
 
     /// A single ideograph is one insertion from every bigram containing it.
@@ -5813,12 +5961,20 @@ mod tests {
         // least the exact one.
         let cand = |content: &'static str| {
             let s = segment(content);
+            let units = s.len as f32;
+            let (tokens, ngram): (Vec<String>, Vec<bool>) = s
+                .tokens
+                .into_iter()
+                .zip(s.ngram)
+                .filter(|(t, _)| t.len() > 1)
+                .unzip();
             Candidate {
                 drawer: drawer("w", "r", content, 0),
                 semantic: 0.0,
                 recency: 0.0,
-                units: s.len as f32,
-                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+                units,
+                tokens,
+                ngram,
             }
         };
         let qterms = tokenize("kubernets kubernetes");
