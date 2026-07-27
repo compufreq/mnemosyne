@@ -84,8 +84,22 @@ impl HashEmbedder {
 /// The name is the thing that makes that visible: a vault records it, and an
 /// open that finds a different one is a migration, not a silent swap. See
 /// `PalaceStore::open_with_embedder`.
+/// v1: no fold, no segmentation. v2: `search_key` + `script::segment`.
+/// v3: Brahmic conjuncts are one word rather than fragments.
+///
+/// v2 was never released — no tag carries it and `origin/main` still holds v1 —
+/// so it could have been redefined in place a second time, and the research
+/// recommended exactly that to avoid a permanent migration row for a version
+/// nobody ran. Minting v3 anyway, because the argument cuts the other way once
+/// the token set changes twice on one branch: anyone who built a vault from an
+/// intermediate commit holds v2 vectors that a redefinition would leave stale
+/// and unmigrated, with the identity matching and therefore no warning and no
+/// `MNEMOSYNE_FORCE_EMBEDDER` escape. Silently stale vectors are the failure
+/// class this whole series exists to remove; one extra tuple is cheaper than
+/// making an exception to it.
 pub const HASH_EMBEDDER_V1: &str = "mnemosyne-hash-v1";
-pub const HASH_EMBEDDER: &str = "mnemosyne-hash-v2";
+pub const HASH_EMBEDDER_V2: &str = "mnemosyne-hash-v2";
+pub const HASH_EMBEDDER: &str = "mnemosyne-hash-v3";
 
 impl Embedder for HashEmbedder {
     fn model_name(&self) -> &str {

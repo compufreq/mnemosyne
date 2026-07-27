@@ -40,14 +40,23 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   maximal same-**script** subruns, plus unigrams only where a character is a
   word (`is_logographic` — Han only; unigrams in an alphabetic script make
   `قطار` match `المستشفى` on a shared alef and retire the relevance gate).
+  A joining mark (combining class 7 or 9 — virama, nukta) is word-INTERNAL and
+  continues a run, but **only in a delimiting script**: `नमस्ते` was `नमस`+`ते`,
+  and the fragments matched unrelated words (`दिल` inside `दिल्ली`). Blanket-
+  joining is wrong — in a non-delimiting script `emit` makes bigrams and a
+  consonant+mark bigram is not injective, so Thai `เก่า`/`ก่อน` would share `ก่`.
   Latin/digit subruns stay whole so a brand name inside CJK survives;
   delimiting scripts — Latin, Cyrillic, Greek, Georgian, Tibetan — are
   untouched, their defects being folding and morphology, which n-grams do not
   address. `segment` filters nothing — BM25 applies the historical `len() > 1`
   **byte** test, the embedder does not, because a one-letter word is signal
   there), hashed n-gram embedder identity (`embed.rs`: `HASH_EMBEDDER` =
-  `mnemosyne-hash-v2` — v1 neither folded nor segmented; the store migrates
-  v1→v2 **automatically at open** via `KNOWN_EMBEDDER_UPGRADES`, since a user
+  `mnemosyne-hash-v3` — v1 neither folded nor segmented, v2 shattered Brahmic
+  conjuncts; the store migrates
+  **every known predecessor** to v3 automatically at open via
+  `KNOWN_EMBEDDER_UPGRADES` (both v1→v3 and v2→v3 — v2 shipped in no tag but
+  existed on the branch, and without its row such a vault matches on name,
+  returns early, and keeps vectors from a different token space silently), since a user
   who merely upgraded the binary did not choose a new vector space. Embeddings
   are not HMAC-covered, so a re-embed never touches a drawer tag or the audit
   chain — which is why this is not a rotation. The walk is batched, idempotent,

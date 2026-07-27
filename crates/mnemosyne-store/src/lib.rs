@@ -76,10 +76,20 @@ const FTS_KEY_VERSION: &str = "v1";
 /// A swap to or from a model-backed embedder is never automatic: that is
 /// potentially hours of inference and a deliberate decision, so it keeps the
 /// explicit `MNEMOSYNE_FORCE_EMBEDDER` + `repair` path.
-const KNOWN_EMBEDDER_UPGRADES: &[(&str, &str)] = &[(
-    mnemosyne_core::embed::HASH_EMBEDDER_V1,
-    mnemosyne_core::embed::HASH_EMBEDDER,
-)];
+const KNOWN_EMBEDDER_UPGRADES: &[(&str, &str)] = &[
+    (
+        mnemosyne_core::embed::HASH_EMBEDDER_V1,
+        mnemosyne_core::embed::HASH_EMBEDDER,
+    ),
+    // v2 never shipped in a tag, but it existed on the branch long enough for
+    // a vault to be built from it. Without this row such a vault matches on
+    // name, returns early, and keeps vectors from a different token space with
+    // no warning and no override that helps.
+    (
+        mnemosyne_core::embed::HASH_EMBEDDER_V2,
+        mnemosyne_core::embed::HASH_EMBEDDER,
+    ),
+];
 /// Default number of fusion-ranked candidates a reranker re-scores per search
 /// (override with `MNEMOSYNE_RERANK_TOP_N`). One cross-encoder forward pass
 /// runs per candidate, so this bounds the added latency.
@@ -4990,6 +5000,13 @@ mod tests {
     // Embedder identity migration
     // ------------------------------------------------------------------
 
+    /// Environment variables are process-global and `cargo test` runs threads
+    /// in parallel, so two tests toggling `MNEMOSYNE_FORCE_EMBEDDER` race and
+    /// one of them reads the other's value. Every such test takes this first.
+    /// (`unwrap_or_else(into_inner)` because a panic inside one holder must not
+    /// poison the rest into failing for the wrong reason.)
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Put a vault back into the state a v1 build left it in: the old
     /// identity recorded, and embeddings that are not what v2 would produce.
     /// Junk vectors are the point — if the migration does not actually run,
@@ -5024,6 +5041,47 @@ mod tests {
     fn reopen_vault(dir: &TempDir) -> Result<PalaceStore, StoreError> {
         let mgr = VaultManager::open(dir.path(), None).unwrap();
         PalaceStore::open(mgr.unlock("test").unwrap())
+    }
+
+    /// Every known predecessor migrates, not just the oldest. v2 shipped in no
+    /// tag but existed on the branch, and a vault built from it holds vectors
+    /// from a different token space.
+    #[test]
+    fn every_known_predecessor_identity_migrates() {
+        for from in [
+            mnemosyne_core::embed::HASH_EMBEDDER_V1,
+            mnemosyne_core::embed::HASH_EMBEDDER_V2,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let mgr = VaultManager::open(dir.path(), None).unwrap();
+            let vault = mgr.create("test", SecurityLevel::Sealed).unwrap();
+            {
+                let mut s = PalaceStore::open(vault).unwrap();
+                s.upsert(&drawer("w", "r", "the heron files verbatim drawers", 0))
+                    .unwrap();
+                make_it_look_like_v1(&s);
+                s.conn
+                    .execute(
+                        "UPDATE meta SET value = ?1 WHERE key = 'embedder_name'",
+                        params![from],
+                    )
+                    .unwrap();
+            }
+            let s = reopen_vault(&dir).unwrap_or_else(|_| panic!("{from} must migrate"));
+            let stored: String = s
+                .conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='embedder_name'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, mnemosyne_core::embed::HASH_EMBEDDER, "from {from}");
+            let hits = s
+                .search("heron verbatim", &SearchOptions::default())
+                .unwrap();
+            assert!(!hits.is_empty(), "from {from}");
+        }
     }
 
     /// Upgrading the binary must not hand the user a broken vault, and must
@@ -5194,6 +5252,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("MNEMOSYNE_FORCE_EMBEDDER", "1");
         let mgr = VaultManager::open(dir.path(), None).unwrap();
         let opened =
@@ -5264,6 +5323,7 @@ mod tests {
                 .unwrap();
             make_it_look_like_v1(&s);
         }
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("MNEMOSYNE_FORCE_EMBEDDER", "1");
         let s = reopen_vault(&dir).unwrap();
         // Identity recorded, but no walk ran — the junk vector is still there.

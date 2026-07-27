@@ -179,12 +179,77 @@ pub struct Segmented {
 ///
 /// `text` is expected to be already canonicalized and lowercased by the
 /// caller — this function decides boundaries, not encoding.
+/// A mark that is orthographically *inside* a word even though
+/// `is_alphanumeric` says otherwise.
+///
+/// Canonical combining class 9 is the virama family (all 69 of them) and 7 is
+/// the nukta family; both join consonants into a cluster. `is_alphanumeric` is
+/// the derived Alphabetic property, and these are not `Other_Alphabetic`, so
+/// they read as word *boundaries* — `नमस्ते` split into `नमस` + `ते`, which is
+/// the Khmer-COENG failure this module was written to fix, in a script family
+/// it did not cover.
+///
+/// The extra codepoints are Devanagari/Bengali/Oriya/Malayalam signs in the
+/// same position that fall outside those two classes.
+fn is_joining_mark(c: char) -> bool {
+    use unicode_normalization::char::canonical_combining_class;
+    matches!(canonical_combining_class(c), 7 | 9)
+        || matches!(c as u32, 0x0951..=0x0954 | 0x09FE | 0x0B55 | 0x0D3B..=0x0D3C)
+}
+
+/// Maximal word runs, treating a joining mark as word-internal — but **only in
+/// a delimiting script**.
+///
+/// The scoping is the whole safety argument. In a delimiting script the token
+/// *is* the word, so gluing two fragments back into their true spelling cannot
+/// make two different words equal — it is injective, and it removes spurious
+/// matches rather than creating them (`दिल` stops matching `दिल्ली`, `मन` stops
+/// matching `मन्दिर`).
+///
+/// In a non-delimiting script `emit` produces character bigrams, and there a
+/// mark is *not* injective: allowing Thai tone marks to join would make
+/// `เก่า`(old) and `ก่อน`(before) share the bigram `ก่`, and `ရန်ကုန်`(Yangon)
+/// share `န်` with `မြန်မာ` — near-contentless high-frequency tokens in the
+/// exact channel, which is precisely the hole that forced unigrams to be
+/// Han-only. So Khmer COENG, Myanmar ASAT and the Thai marks keep splitting,
+/// and those scripts are bit-identical to before.
+///
+/// A joining mark never *opens* a run, so a stray leading virama stays a
+/// delimiter.
+fn runs(text: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut prev: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        let inside = if c.is_alphanumeric() {
+            true
+        } else if is_joining_mark(c) {
+            start.is_some() && prev.is_some_and(|p| script_of(p) == Script::Other)
+        } else {
+            false
+        };
+        match (inside, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                out.push(&text[s..i]);
+                start = None;
+            }
+            _ => {}
+        }
+        prev = Some(c);
+    }
+    if let Some(s) = start {
+        out.push(&text[s..]);
+    }
+    out
+}
+
 pub fn segment(text: &str) -> Segmented {
     let mut out = Segmented {
         tokens: Vec::new(),
         len: 0,
     };
-    for run in text.split(|c: char| !c.is_alphanumeric()) {
+    for run in runs(text) {
         if run.is_empty() {
             continue;
         }
@@ -223,7 +288,11 @@ fn emit(out: &mut Segmented, sub: &str, script: Script) {
         return;
     }
     let chars: Vec<char> = sub.chars().collect();
-    out.len += chars.len();
+    // A joining mark is not a content unit — it glues two consonants into one
+    // cluster. Counting it would inflate BM25's document length. Defensive
+    // here: `runs` only lets one join inside a delimiting subrun, which takes
+    // the branch above.
+    out.len += chars.iter().filter(|c| !is_joining_mark(**c)).count();
     // Unigrams only where a character is a word (see `is_logographic`).
     if script.is_logographic() {
         for ch in &chars {
@@ -397,6 +466,110 @@ mod tests {
             let want: Vec<String> = want.into_iter().map(str::to_string).collect();
             assert_eq!(got, want, "input: {input}");
         }
+    }
+
+    /// A conjunct is one word. The virama is not `Other_Alphabetic`, so it read
+    /// as a boundary and shattered every Brahmic word at its clusters.
+    #[test]
+    fn a_brahmic_conjunct_is_one_word() {
+        assert_eq!(toks("नमस्ते"), vec!["नमस्ते".to_string()]);
+        assert_eq!(segment("नमस्ते").len, 1, "one word, not two");
+        assert_eq!(toks("संस्कृत"), vec!["संस्कृत".to_string()]);
+        assert_eq!(toks("தமிழ்"), vec!["தமிழ்".to_string()]);
+        assert_eq!(toks("বাংলায়"), vec!["বাংলায়".to_string()]);
+        assert_eq!(toks("മലയാളം"), vec!["മലയാളം".to_string()]);
+    }
+
+    /// The gain is precision, not just recall: the fragments were matching
+    /// unrelated words. `दिल`(heart) matched `दिल्ली`(Delhi) on `दिल`.
+    #[test]
+    fn conjunct_fragments_stop_colliding() {
+        for (query, doc) in [
+            ("दिल", "मैं दिल्ली में रहता हूँ"),
+            ("मन", "मन्दिर गया"),
+            ("धन", "धन्यवाद"),
+            ("लोक", "यह संस्कृत का श्लोक है"),
+        ] {
+            let d = toks(doc);
+            let shared = toks(query).iter().filter(|t| d.contains(t)).count();
+            assert_eq!(shared, 0, "{query} still collides inside {doc}");
+        }
+    }
+
+    /// A joining mark never opens a run, so a stray one stays a delimiter.
+    #[test]
+    fn a_leading_joining_mark_is_still_a_delimiter() {
+        assert_eq!(toks("\u{094D}नमस"), vec!["नमस".to_string()]);
+    }
+
+    /// The scoping is the safety argument. Letting marks join in a
+    /// non-delimiting script would make consonant+mark BIGRAMS, which are not
+    /// injective: `เก่า`(old) and `ก่อน`(before) would share `ก่`, and
+    /// `ရန်ကုန်`(Yangon) would share `န်` with `မြန်မာ` — contentless
+    /// high-frequency tokens in the admitting channel.
+    #[test]
+    fn non_delimiting_scripts_are_untouched() {
+        let cases = [
+            "ฉันไปกรุงเทพเมื่อวานนี้",
+            "เก่า",
+            "ก่อน",
+            "ខ្ញុំបានទៅភ្នំពេញ",
+            "ရန်ကုန်",
+            "မြန်မာ",
+            "قَرَأتُ الكِتَابَ",
+            "한국어는 어렵다",
+            "我昨天去了北京参加会议",
+            "昨日は東京で会議に参加しました",
+            "בְּרֵאשִׁית",
+            "کتاب‌ها",
+            "٢٠٢٣",
+            "İZMİR",
+            "мо́жет",
+            "vitamin c",
+            "https://example.com/a?b=1",
+        ];
+        for input in cases {
+            let before: Vec<String> = crate::normalize::search_key(input)
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|r| !r.is_empty())
+                .flat_map(|r| {
+                    let mut s = Segmented {
+                        tokens: Vec::new(),
+                        len: 0,
+                    };
+                    let mut st = 0usize;
+                    let mut cur: Option<Script> = None;
+                    for (off, ch) in r.char_indices() {
+                        let sc = script_of(ch);
+                        match cur {
+                            None => {
+                                cur = Some(sc);
+                                st = off;
+                            }
+                            Some(p) if p == sc => {}
+                            Some(p) => {
+                                emit(&mut s, &r[st..off], p);
+                                cur = Some(sc);
+                                st = off;
+                            }
+                        }
+                    }
+                    if let Some(p) = cur {
+                        emit(&mut s, &r[st..], p);
+                    }
+                    s.tokens
+                })
+                .collect();
+            let after = segment(&crate::normalize::search_key(input)).tokens;
+            assert_eq!(after, before, "{input:?} changed");
+        }
+    }
+
+    /// The case suffix stays out of reach, and that is a gap, not a fix.
+    #[test]
+    fn brahmic_case_suffixes_are_still_unreachable() {
+        let d = toks("घरमें बैठा हूँ");
+        assert_eq!(toks("घर").iter().filter(|t| d.contains(t)).count(), 0);
     }
 
     /// Tibetan delimits on the tsheg, so it needs no segmentation and must
