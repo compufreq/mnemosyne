@@ -17,7 +17,7 @@ use base64::Engine;
 use mnemosyne_index::{IndexRecord, VectorIndex};
 use rusqlite::{params, OptionalExtension};
 
-use crate::{PalaceStore, SearchHit, SearchOptions, StoreError};
+use crate::{PalaceStore, SearchHit, SearchOptions, StoreError, SEMANTIC_ADMISSION_GATE};
 
 /// Raw index-push row: (id, wing, room, content, embedding).
 type PushRow = (String, String, String, Vec<u8>, Vec<u8>);
@@ -157,7 +157,7 @@ impl PalaceStore {
         }
         // The exact channel, for the same reason as the local gate: an
         // approximate match should reorder a result set, never populate one.
-        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > 0.56);
+        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE);
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)

@@ -40,6 +40,26 @@ use mnemosyne_vault::{SecurityLevel, Vault, VaultError};
 /// recall exact; above it the FTS5 candidate cut dominates search cost.
 const DEFAULT_FTS_PREFILTER_MIN: usize = 2048;
 
+/// The cosine above which a drawer is admitted on semantic evidence alone.
+///
+/// **Calibrated to `HashEmbedder`, and must be re-derived for any other
+/// embedder.** `semantic` is `(cosine + 1) / 2`, so this is a raw cosine of
+/// 0.12 — chosen because feature hashing over surface forms puts unrelated
+/// text at almost exactly zero. A model embedder does not: its unrelated-pair
+/// floor is typically well above 0.12, and swapping one in without re-deriving
+/// this number makes the disjunct vacuously true and retires the relevance
+/// gate for every query in every language, by configuration rather than by
+/// code. `the_semantic_gate_is_calibrated_to_the_default_embedder` is the
+/// acceptance test for that.
+///
+/// It is also length-sensitive in a way nothing else records: measured, a
+/// typo pair and a false friend both admit on a bare pair (0.85, 0.78) and
+/// stop admitting past ~40 words, while a true morphological pair
+/// (`книга`/`книге`) stops admitting at 20. Admission on this leg tracks
+/// drawer length as much as relatedness, which is why lexical evidence is
+/// what the gate should mostly rest on.
+const SEMANTIC_ADMISSION_GATE: f32 = 0.56;
+
 /// Bumped whenever `search_key` changes what the FTS index holds, so an
 /// existing vault rebuilds instead of serving a stale token set. `v1` is the
 /// first folded index; a vault written before it has no marker at all and the
@@ -1888,7 +1908,7 @@ impl PalaceStore {
         // than populate one. Gating on the blended channel would mean every
         // fold widens admission, which is how `قطار` came to match
         // `المستشفى` on a shared alef.
-        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > 0.56);
+        hits.retain(|h| h.lexical_exact > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE);
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -2207,7 +2227,62 @@ fn fuzzy_eq(q: &str, tok: &str) -> bool {
     if q.len() >= 5 && within_one_edit(q, tok) {
         return true;
     }
-    same_word_family(q, tok)
+    same_word_family(q, tok) || contains_a_long_word(q, tok)
+}
+
+/// One word is a whole substring of the other, at any offset.
+///
+/// This is the half of compounding a prefix rule structurally cannot see:
+/// `Dampfschiff` is a *suffix* of `Donaudampfschifffahrt` and `Ausbildung` sits
+/// interior to `Bundesausbildungsförderungsgesetz`, so `same_word_family`
+/// reaches neither — the shared prefix is zero.
+///
+/// It is also a consistency fix. `lexical_score` has always scored this
+/// relation, through `lower.contains(t)`, so `Fusion::Legacy` and every
+/// remote-index search already had it; only the default BM25 path, which
+/// compares tokens rather than substrings, did not. Measured, that mattered
+/// more than it looks: the cosine leg carries `Dampfschiff` /
+/// `Donaudampfschifffahrt` at 0.8182 on a bare pair but only 0.5058 once the
+/// drawer reaches ~80 words, so at real chunk length `lexical_exact` was 0,
+/// `semantic` was below the gate, and the drawer was dropped rather than
+/// mis-ranked.
+///
+/// **Eight characters on the shorter side**, chosen by measurement over this
+/// repo's own prose (73 files, 6,710 distinct alphabetic words): 644 linked
+/// pairs, 0.017% of eligible pairs, 214 of them beyond `same_word_family`'s
+/// reach, per-word degree p90 = 1 and max = 8. At seven the `-ability` family
+/// alone links fourteen words to `ability`, and `article`/`particle`,
+/// `mission`/`admission` and `allowed`/`swallowed` arrive — 401 extra pairs.
+///
+/// Deliberately short of `run` / `running`, whose shorter side is 3: short
+/// stems are a different gap and this is not a workaround for it.
+///
+/// The residue it does create is real morphology far more often than noise —
+/// `unresolved`/`resolved`, `incompatible`/`compatible`,
+/// `autoincrement`/`increment` — with `counting`/`accounting` and
+/// `knowledge`/`acknowledged` as the sharpest genuine false pairs. All of it
+/// lands in the approximate channel, so none of it can admit a drawer.
+/// Critically, it creates none of gap (a)'s false friends: containment is
+/// false for `город`/`горох`, `книга`/`книге` and `positive`/`position`.
+fn contains_a_long_word(q: &str, tok: &str) -> bool {
+    // Delimiting scripts only — a bigram token from Han, Arabic or Thai must
+    // never reach a substring rule.
+    if !q
+        .chars()
+        .all(|c| !mnemosyne_core::script::script_of(c).attaches_without_delimiter())
+    {
+        return false;
+    }
+    const MIN_CHARS: usize = 8;
+    let (qn, tn) = (q.chars().count(), tok.chars().count());
+    if qn.min(tn) < MIN_CHARS {
+        return false;
+    }
+    if qn <= tn {
+        tok.contains(q)
+    } else {
+        q.contains(tok)
+    }
 }
 
 /// One word is nearly a prefix of the other — the reachable half of
@@ -2232,9 +2307,16 @@ fn fuzzy_eq(q: &str, tok: &str) -> bool {
 /// Three false pairs survive and are the accepted cost: `conversation` /
 /// `conversion`, `processor` / `procession`, `internal` / `international`.
 /// They feed the **approximate** channel only, so none of them can admit a
-/// drawer — they can only move one inside a result set that already cleared
-/// the exact gate. That containment is why the channel split had to land
-/// first.
+/// drawer **on the lexical channel** — they can only move one inside a result
+/// set that already cleared the exact gate. That containment is why the
+/// channel split had to land first.
+///
+/// The qualifier is not pedantry. The gate is a disjunction, and its other arm
+/// is `semantic > SEMANTIC_ADMISSION_GATE`, which is undiscounted and
+/// uncapped: measured, `internal` / `international` clears it at every drawer
+/// length tested and `conversation` / `conversion` at three lengths of four.
+/// So these pairs *can* be admitted — by the cosine leg, not by this rule.
+/// Reading this containment as absolute overstates what the split buys.
 ///
 /// What this does not reach, and no prefix rule can: Russian nominal case
 /// (`книга`/`книге` share 4, and so do `город`/`горох`), Greek `πόλη`/`πόλεων`
@@ -2263,10 +2345,12 @@ fn same_word_family(q: &str, tok: &str) -> bool {
 
 /// True when a query cannot be served by the FTS5 prefilter.
 ///
-/// `drawers_fts` is `content='drawers'` external-content with no `tokenize=`
-/// option, so it indexes raw content under unicode61 — which segments these
-/// scripts no better than we used to. Our query terms are now characters and
-/// bigrams and cannot agree with that index.
+/// `drawers_fts` is a standalone fts5 table over `search_key(content)` — see
+/// `init_fts_schema`, which explains why it is no longer external-content over
+/// raw bytes. Folding the index fixed the *fold* disagreement; it does not fix
+/// the *segmentation* one, and that is what this predicate is still for: our
+/// tokens for Han, Kana, Hangul, Arabic, Khmer, Thai, Lao and Myanmar are
+/// character bigrams, and unicode61 does not bigram anything.
 ///
 /// The prefilter is only safe when it finds nothing: `fts_candidates` returns
 /// `None` on an empty result and search falls back to a full scan. A
@@ -5174,6 +5258,114 @@ mod tests {
         assert!(!same_word_family("北京", "北京市"));
     }
 
+    /// Compounding's other half: a suffix or interior relation, which no
+    /// prefix rule can see.
+    #[test]
+    fn a_contained_word_is_found_at_any_offset() {
+        for (a, b) in [
+            ("dampfschiff", "donaudampfschifffahrt"),
+            ("ausbildung", "bundesausbildungsfoerderungsgesetz"),
+            ("konfiguration", "systemkonfiguration"),
+        ] {
+            assert!(contains_a_long_word(a, b), "{a} in {b}");
+            assert!(contains_a_long_word(b, a), "and symmetrically");
+        }
+        // Below the eight-character floor: short stems are a different gap and
+        // this must not pretend to solve them.
+        assert!(!contains_a_long_word("run", "running"));
+        assert!(!contains_a_long_word("ability", "vulnerability"), "7 chars");
+        // The decisive safety property: none of gap (a)'s false friends.
+        for (a, b) in [
+            ("город", "горох"),
+            ("книга", "книге"),
+            ("positive", "position"),
+        ] {
+            assert!(!contains_a_long_word(a, b), "{a} / {b}");
+        }
+        // A bigram token from a segmented script must never reach this rule.
+        assert!(!contains_a_long_word("北京", "北京市"));
+    }
+
+    /// The accepted cost, pinned so it is a recorded decision rather than a
+    /// surprise in a bug report. All of it is approximate-channel only.
+    #[test]
+    fn containment_admits_these_false_pairs_and_we_accept_it() {
+        assert!(contains_a_long_word("counting", "accounting"));
+        assert!(contains_a_long_word("knowledge", "acknowledged"));
+        // Derivational prefixes: morphologically related, semantically
+        // opposite. Correct as evidence, wrong as a synonym — which is exactly
+        // what a capped, half-weighted approximate channel is for.
+        assert!(contains_a_long_word("compatible", "incompatible"));
+        assert!(contains_a_long_word("resolved", "unresolved"));
+    }
+
+    /// Containment is ranking evidence, and the boundary of that is worth
+    /// pinning because it is easy to over-claim.
+    ///
+    /// It raises `lexical` and deliberately not `lexical_exact`, so it moves a
+    /// compound *within* a result set it already reached. It does **not**
+    /// admit one. That matters at real drawer length: measured, the cosine leg
+    /// carries `Dampfschiff`/`Donaudampfschifffahrt` at 0.82 on a bare pair but
+    /// only 0.51 past ~80 words, so past that length a compound drawer has
+    /// neither exact lexical evidence nor a passing cosine and is dropped —
+    /// containment cannot rescue it from the approximate channel.
+    ///
+    /// That residual admission failure is an open gap, not a decision. Closing
+    /// it means letting morphological evidence admit, which is a change to
+    /// what the gate *means* and is therefore the maintainer's call.
+    #[test]
+    fn containment_ranks_a_compound_but_does_not_admit_one() {
+        let cand = |content: &'static str| {
+            let s = segment(content);
+            Candidate {
+                drawer: drawer("w", "r", content, 0),
+                semantic: 0.0,
+                recency: 0.0,
+                units: s.len as f32,
+                tokens: s.tokens.into_iter().filter(|t| t.len() > 1).collect(),
+            }
+        };
+        let qterms = tokenize("dampfschifffahrt");
+        let cands = vec![
+            cand("die donaudampfschifffahrtsgesellschaft tagt heute"),
+            cand("ein bericht ueber ganz andere dinge"),
+        ];
+        let b = bm25_raw(&qterms, &cands);
+        assert_eq!(b.exact[0], 0.0, "containment is not exact evidence");
+        assert!(b.raw[0] > 0.0, "but it does rank");
+        assert_eq!(b.raw[1], 0.0, "and the unrelated drawer gets nothing");
+    }
+
+    /// The gate is a raw cosine of 0.12, and it only means anything because
+    /// feature hashing puts unrelated text at ~0. This is the acceptance test
+    /// for any future embedder: a model whose unrelated-pair floor exceeds it
+    /// makes the semantic disjunct vacuously true and retires the relevance
+    /// gate for every query in every language, by configuration alone.
+    #[test]
+    fn the_semantic_gate_is_calibrated_to_the_default_embedder() {
+        let e = HashEmbedder;
+        let ceiling = 2.0 * SEMANTIC_ADMISSION_GATE - 1.0;
+        let unrelated = [
+            ("the quarterly revenue report", "私は昨日公園へ行きました"),
+            ("kubernetes cluster autoscaling", "ذهبت إلى المستشفى أمس"),
+            (
+                "my cat sleeps on the windowsill",
+                "πήγα στην Αθήνα το καλοκαίρι",
+            ),
+            (
+                "database migration rollback",
+                "그는 어제 서울에서 회의에 참석했습니다",
+            ),
+        ];
+        for (a, b) in unrelated {
+            let c = mnemosyne_core::embed::cosine(&e.embed(a), &e.embed(b));
+            assert!(
+                c < ceiling,
+                "unrelated pair scored {c}, at or above the gate's {ceiling}"
+            );
+        }
+    }
+
     /// A family match must never *admit* a drawer — only reorder one already
     /// admitted. This is the containment the channel split exists to provide.
     #[test]
@@ -5457,7 +5649,7 @@ mod tests {
         let hits = s.search("kubernetes", &SearchOptions::default()).unwrap();
         for h in &hits {
             assert!(
-                h.lexical_exact > 0.0 || h.semantic > 0.56,
+                h.lexical_exact > 0.0 || h.semantic > SEMANTIC_ADMISSION_GATE,
                 "admitted on approximate evidence alone: exact={} sem={}",
                 h.lexical_exact,
                 h.semantic

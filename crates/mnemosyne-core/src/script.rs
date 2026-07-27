@@ -42,6 +42,29 @@
 //!   and Tibetan (which delimits on the tsheg U+0F0B) mark their boundaries;
 //!   their remaining defects are folding and morphology, not segmentation, and
 //!   n-grams are the wrong tool for those.
+//!
+//! ## Known gaps, recorded rather than discovered
+//!
+//! * **Hebrew and Yiddish get nothing.** `script_of` returns `Script::Other`
+//!   for `U+0590..U+05FF`, so there are no bigrams, and `search_key` is the
+//!   identity on Hebrew — no niqqud strip. Measured: `בְּרֵאשִׁית` and `בראשית`
+//!   share no token, no n-gram at any n, no embedder trigram, and score
+//!   exactly 0.5000, so pointed Hebrew cannot find its own unpointed spelling.
+//!   Hebrew also attaches its clitics at the *front* (ה ו ב ל כ מ ש), so a
+//!   prefix rule is structurally the wrong shape for it. Separately
+//!   `ספר`/`ספרים` — a three-letter root and its plural, i.e. the common case —
+//!   has zero evidence on every channel and would not be fixed by a fold.
+//! * **Brahmic conjuncts shatter.** The virama is not `Other_Alphabetic`
+//!   (Devanagari `U+094D`, and the same in Bengali, Gurmukhi, Gujarati, Oriya,
+//!   Tamil, Telugu, Kannada, Malayalam, Sinhala), so `नमस्ते` splits at the
+//!   conjunct into `नमस` + `ते` — the Khmer-COENG failure this module was
+//!   written to fix, in a script family it does not cover.
+//! * **A one-syllable Korean noun cannot find itself inflected.** `집` emits
+//!   `["집"]` while `집에서` emits `["집에","에서","집에서"]`: intersection empty,
+//!   and `fuzzy_eq` is excluded by its own two-character minimum. Note this
+//!   gap does *not* exist on `Fusion::Legacy` or the remote path, where
+//!   `lower.contains("집")` is true — so it is configuration-dependent, which
+//!   is itself worth knowing.
 
 /// The scripts this module treats specially, plus `Other` for everything that
 /// already marks its own word boundaries.
