@@ -123,6 +123,8 @@ fn may_fold(s: &str) -> bool {
                 // the block would rebuild every Russian drawer per candidate
                 // to produce an identical string.
                 | 0x0401 | 0x0451
+                // Hebrew: only the points fold, and they all live here.
+                | 0x0591..=0x05C7
                 | 0x0600..=0x08FF
                 | 0x115F | 0x1160
                 | 0x180B..=0x180F
@@ -167,6 +169,14 @@ fn is_stripped(c: char) -> bool {
         | 0x0640 | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670
         | 0x06D6..=0x06DC | 0x06DF..=0x06E4 | 0x06E7 | 0x06E8 | 0x06EA..=0x06ED
         | 0x08CA..=0x08D3 | 0x08E0..=0x08E1 | 0x08EA..=0x08EF
+        // S5e — Hebrew points (niqqud, and the cantillation marks above them).
+        // Same argument as the Arabic harakat directly above: they are vowel
+        // and chant notation, normally absent, and a vocalised drawer must
+        // still answer an unvocalised query. Deliberately excluded: U+05BE
+        // MAQAF is a hyphen, U+05C0 PASEQ and U+05C3 SOF PASUQ are verse
+        // punctuation, and U+05C6 NUN HAFUKHA is an editorial mark — all four
+        // are delimiters, and stripping them would glue two words into one.
+        | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
         // S3 residue — a voicing mark that failed to compose onto a
         // non-voicable base. Mn, and it would split the katakana run at
         // exactly the place S2 exists to repair.

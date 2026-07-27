@@ -76,6 +76,16 @@ pub enum Script {
     Hangul,
     Bopomofo,
     Arabic,
+    /// Hebrew. It writes spaces between words, which is why it sat in `Other`
+    /// and was therefore treated as delimiting — but its clitics (`ה` the,
+    /// `ב` in, `ל` to, `ו` and, `מ` from, `ש` that) attach with **no**
+    /// delimiter, exactly as Arabic's do, and Hebrew stems are three or four
+    /// characters. Classed as delimiting it got `contains_a_long_word`'s
+    /// eight-character floor and was excluded from `shares_a_stem`, so every
+    /// route was closed at once: measured over 8 real pairs at both drawer
+    /// lengths, Hebrew admitted **0**, the only language in the audit to score
+    /// nothing at all. Whole-word containment reaches 7 of those 8.
+    Hebrew,
     Khmer,
     Thai,
     Lao,
@@ -89,9 +99,11 @@ impl Script {
     /// True when the script attaches words or morphology without a delimiter,
     /// so a boundary split cannot find word edges inside it.
     ///
-    /// Arabic is included even though it spaces its words: the definite
-    /// article and the conjunction/preposition proclitics attach with no
-    /// delimiter, so `كتاب` cannot reach `الكتاب` by any split.
+    /// Arabic and Hebrew are included even though they space their words: in
+    /// both, the definite article and the conjunction/preposition proclitics
+    /// attach with no delimiter, so `كتاب` cannot reach `الكتاب` and `ספר`
+    /// cannot reach `הספר` by any split. This predicate is about morphology,
+    /// not about whether the orthography happens to use a space.
     pub fn attaches_without_delimiter(self) -> bool {
         !matches!(self, Script::Other)
     }
@@ -146,6 +158,10 @@ pub fn script_of(c: char) -> Script {
         | 0x08A0..=0x08FF      // Extended-A
         | 0xFB50..=0xFDFF      // Presentation Forms-A
         | 0xFE70..=0xFEFF => Script::Arabic,
+
+        // Hebrew, plus the presentation forms. The points (niqqud) live inside
+        // this block and the fold strips them, so they never reach a run.
+        0x0590..=0x05FF | 0xFB1D..=0xFB4F => Script::Hebrew,
 
         0x1780..=0x17FF | 0x19E0..=0x19FF => Script::Khmer,
         0x0E00..=0x0E7F => Script::Thai,
