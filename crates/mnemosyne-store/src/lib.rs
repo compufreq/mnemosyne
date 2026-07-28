@@ -3077,12 +3077,38 @@ const LATIN_STOPWORDS: &[(MorphLang, &[&str])] = &[
 /// the reverse reason: an era marker is written beside the very date it
 /// qualifies, while a stray quotation is not a statement about the drawer.
 fn language_of_drawer(tokens: &[String]) -> MorphLang {
+    // One pass over the drawer against a map built once, rather than eight
+    // passes over it against twelve words apiece. This runs per CANDIDATE
+    // inside `bm25_raw`, so the naive shape cost ~96 string comparisons per
+    // token — millions per query on a real corpus, in the hot path.
+    static INDEX: std::sync::OnceLock<std::collections::HashMap<&'static str, MorphLang>> =
+        std::sync::OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut m: std::collections::HashMap<&'static str, MorphLang> =
+            std::collections::HashMap::new();
+        for (lang, words) in LATIN_STOPWORDS {
+            for w in *words {
+                // A word two languages both claim votes for neither: it cannot
+                // discriminate, and counting it for both would let the longer
+                // list win on nothing.
+                m.entry(w)
+                    .and_modify(|v| *v = MorphLang::Undeclared)
+                    .or_insert(*lang);
+            }
+        }
+        m
+    });
+    let mut votes = [0usize; 16];
+    for t in tokens {
+        if let Some(l) = index.get(t.as_str()) {
+            if *l != MorphLang::Undeclared {
+                votes[*l as usize] += 1;
+            }
+        }
+    }
     let (mut best, mut best_n, mut second) = (MorphLang::Undeclared, 0usize, 0usize);
-    for (lang, words) in LATIN_STOPWORDS {
-        let n = tokens
-            .iter()
-            .filter(|t| words.contains(&t.as_str()))
-            .count();
+    for (lang, _) in LATIN_STOPWORDS {
+        let n = votes[*lang as usize];
         if n > best_n {
             second = best_n;
             best_n = n;
