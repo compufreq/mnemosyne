@@ -2,6 +2,40 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Substitutive morphology, which is what almost everything left was.** Three
+  languages measured **0.0%** on the lexical channel — Italian, Russian, Dutch —
+  and the reason is structural: every rule the engine owned was ADDITIVE.
+  `libri` is not `libro` plus anything; it is `libro` with its ending replaced.
+  Italian, Russian, Greek and every Romance verb paradigm work this way.
+  - **A generic shared-prefix rule cannot do this job, at any threshold.**
+    `libro`/`libri` shares four characters and differs by one on each side — and
+    so does `porto`/`porta`. Identical shape, so any threshold admitting the
+    plural admits the false pair. What separates them is not length but
+    *identity*: `o`→`i` is an Italian plural and `o`→`a` is not.
+  - So `inflections_for` is a table of the mappings each language actually has,
+    scoped by `MorphLang` — data one can read and check, rather than a number
+    one can only tune. Six languages added: Italian, Spanish, French,
+    Portuguese, Russian, Greek.
+
+  | language | lexical before | after |
+  |---|---|---|
+  | Spanish | 57.1% | **100.0%** |
+  | Italian | **0.0%** | 83.3% |
+  | Portuguese | 33.3% | 83.3% |
+  | French | 28.6% | 71.4% |
+  | Greek | 38.8% | 53.1% |
+  | Russian | **0.0%** | 50.0% |
+
+  Aggregate lexical over 191 pairs in 19 languages: **55.0% → 69.1%**, with the
+  pairs carried by the embedder alone falling from 20 to 12.
+  - **Zero new false merges.** `caso`/`casa`, `porto`/`porta`, `город`/`горох`,
+    `сообщение`/`сообщество` all stay apart, and are now pinned in the shipped
+    controls (32, up from 27) with the language declared — a rule scoped to a
+    language is not exercised at all by an undeclared control.
+  - **One named price:** Italian `pesca`/`pesce` merges, because `a`→`e` carries
+    the entire feminine plural. Recorded as `Verdict::Cost`, exactly as
+    παράδειγμα/παράδεισος is for Greek.
+
 - **Spanish reaches 100%, and the untested Latin languages are now measured.**
   27 Spanish irregular verb forms join `IRREGULAR` (`ser`/`fue`, `ir`/`va`,
   `tener`/`tiene` …), taking Spanish from 85.7% to **100%** of its audited

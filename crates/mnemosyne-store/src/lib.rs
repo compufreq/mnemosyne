@@ -2522,6 +2522,12 @@ pub enum MorphLang {
     Undeclared,
     English,
     German,
+    Italian,
+    Spanish,
+    French,
+    Portuguese,
+    Russian,
+    Greek,
 }
 
 /// The inflectional endings a word may gain, as a CLOSED set per language.
@@ -2543,6 +2549,186 @@ pub enum MorphLang {
 /// `Bücher`, `Männer` all carry one and `flower` cannot — but `search_key`
 /// folds it away long before this rule sees the word, and `Kind`/`Kinder` has
 /// no umlaut anyway.
+/// Endings that SUBSTITUTE for one another on a shared stem, per language.
+///
+/// This is the mechanism `suffix_family` is structurally blind to, and it is
+/// the single largest block of everything still dropped. An additive rule asks
+/// whether one word is the other **plus** an ending; `libri` is not `libro`
+/// plus anything, it is `libro` with its ending replaced. Italian, Russian,
+/// Greek and every Romance verb paradigm work this way, which is why three
+/// languages measured **0.0%** on the lexical channel.
+///
+/// **A generic shared-prefix rule cannot do this job.** `libro`/`libri` shares
+/// four characters and differs by one on each side — and so does
+/// `porto`/`porta`. They are the same shape, so any threshold that admits the
+/// plural admits the false pair. What separates them is not length but
+/// *identity*: `o`→`i` is an Italian plural and `o`→`a` is not. So the rule is
+/// a table of the mappings a language actually has, which is data one can read
+/// and check, rather than a number one can only tune.
+///
+/// Every entry is a real paradigm ending. Nothing here is a guess about which
+/// strings look similar.
+fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
+    const NONE: &[(&str, &str)] = &[];
+    // Nouns first, then the verb classes.
+    const IT: &[(&str, &str)] = &[
+        ("o", "i"),
+        ("a", "e"),
+        ("e", "i"),
+        ("co", "chi"),
+        ("go", "ghi"),
+        ("ca", "che"),
+        ("ga", "ghe"),
+        ("are", "o"),
+        ("are", "a"),
+        ("are", "ano"),
+        ("are", "ato"),
+        ("are", "ava"),
+        ("are", "iamo"),
+        ("ere", "o"),
+        ("ere", "e"),
+        ("ere", "ono"),
+        ("ere", "uto"),
+        ("ire", "o"),
+        ("ire", "e"),
+        ("ire", "ono"),
+        ("ire", "ito"),
+    ];
+    const ES: &[(&str, &str)] = &[
+        ("ar", "o"),
+        ("ar", "a"),
+        ("ar", "an"),
+        ("ar", "amos"),
+        ("ar", "aron"),
+        ("ar", "aba"),
+        ("ar", "ado"),
+        ("er", "o"),
+        ("er", "e"),
+        ("er", "en"),
+        ("er", "emos"),
+        ("er", "ieron"),
+        ("er", "ido"),
+        ("ir", "o"),
+        ("ir", "e"),
+        ("ir", "en"),
+        ("ir", "imos"),
+        ("ir", "ieron"),
+        ("ir", "ido"),
+    ];
+    const FR: &[(&str, &str)] = &[
+        ("er", "e"),
+        ("er", "es"),
+        ("er", "ent"),
+        ("er", "ons"),
+        ("er", "ez"),
+        ("er", "ais"),
+        ("er", "ait"),
+        ("er", "ait"),
+        ("al", "aux"),
+        ("eau", "eaux"),
+        ("if", "ive"),
+    ];
+    const PT: &[(&str, &str)] = &[
+        ("ar", "o"),
+        ("ar", "a"),
+        ("ar", "am"),
+        ("ar", "ou"),
+        ("ar", "amos"),
+        ("ar", "ado"),
+        ("er", "o"),
+        ("er", "e"),
+        ("er", "em"),
+        ("er", "eu"),
+        ("er", "ido"),
+        ("ir", "o"),
+        ("ir", "e"),
+        ("ir", "em"),
+        ("ir", "iu"),
+        ("ao", "oes"),
+    ];
+    // Russian: the six cases of the commonest declensions, plus the verb
+    // endings. Nothing here maps a consonant to a consonant, which is what
+    // keeps `город`/`горох` apart.
+    const RU: &[(&str, &str)] = &[
+        ("а", "и"),
+        ("а", "е"),
+        ("а", "у"),
+        ("а", "ой"),
+        ("а", "ы"),
+        ("а", "ам"),
+        ("а", "ах"),
+        ("я", "и"),
+        ("я", "е"),
+        ("я", "ю"),
+        ("ь", "и"),
+        ("ь", "е"),
+        ("ать", "аю"),
+        ("ать", "ает"),
+        ("ать", "ают"),
+        ("ать", "ал"),
+        ("ить", "ю"),
+        ("ить", "ит"),
+        ("ить", "ят"),
+        ("ить", "ил"),
+    ];
+    // Greek, written as the fold leaves it — accents already stripped.
+    const EL: &[(&str, &str)] = &[
+        ("ος", "ου"),
+        ("ος", "οι"),
+        ("ος", "ων"),
+        ("ος", "ους"),
+        ("ος", "ο"),
+        ("α", "ες"),
+        ("α", "ων"),
+        ("α", "ας"),
+        ("η", "ης"),
+        ("η", "εις"),
+        ("η", "εων"),
+        ("ης", "η"),
+        ("ης", "ες"),
+        ("ης", "ων"),
+        ("ω", "ει"),
+        ("ω", "εις"),
+        ("ω", "ουμε"),
+        ("ω", "ουν"),
+        ("ομαι", "εται"),
+        ("ομαι", "ονται"),
+    ];
+    match lang {
+        MorphLang::Italian => IT,
+        MorphLang::Spanish => ES,
+        MorphLang::French => FR,
+        MorphLang::Portuguese => PT,
+        MorphLang::Russian => RU,
+        MorphLang::Greek => EL,
+        _ => NONE,
+    }
+}
+
+/// Shortest stem an inflection may sit on. Three: Italian `cas`/`casa`/`case`
+/// is the pair this exists for, and a two-character stem in any of these
+/// languages is a preposition, not a lemma.
+const INFLECTION_STEM_FLOOR: usize = 3;
+
+/// Two words that are one stem carrying two endings the language actually
+/// pairs — `libro`/`libri`, `книга`/`книги`, `hablar`/`hablo`.
+///
+/// Pairwise like everything else here: it answers about two strings and builds
+/// no equivalence class, so a wrong entry costs exactly the pairs it names.
+fn inflection_family(q: &str, tok: &str, lang: MorphLang) -> bool {
+    if q == tok {
+        return false;
+    }
+    inflections_for(lang).iter().any(|(a, b)| {
+        [(a, b), (b, a)].iter().any(
+            |(x, y)| match (q.strip_suffix(**x), tok.strip_suffix(**y)) {
+                (Some(sq), Some(st)) => sq == st && sq.chars().count() >= INFLECTION_STEM_FLOOR,
+                _ => false,
+            },
+        )
+    })
+}
+
 fn suffixes_for(lang: MorphLang) -> &'static [&'static str] {
     // `-en` is German's, not everyone's. It buys English nothing — every
     // English `-en` form here (`child`/`children`, `ox`/`oxen`) is irregular
@@ -2554,7 +2740,10 @@ fn suffixes_for(lang: MorphLang) -> &'static [&'static str] {
     const GERMAN: &[&str] = &["s", "es", "ed", "ing", "en", "er"];
     match lang {
         MorphLang::German => GERMAN,
-        MorphLang::Undeclared | MorphLang::English => COMMON,
+        // Every other language's productive endings are SUBSTITUTIVE and live
+        // in `inflections_for`; what they share with English is the plural
+        // `-s`/`-es`, which the common set already carries.
+        _ => COMMON,
     }
 }
 
@@ -2904,7 +3093,7 @@ fn morph_relation(q: &str, tok: &str, lang: MorphLang) -> bool {
     // of the rule, and Greek's beneficiaries are nine real paradigm forms.
     // A named irregular form, and a regular ending on a stem the two share.
     // Both are pairwise and neither creates a class.
-    if irregular_pair(q, tok) || suffix_family(q, tok, lang) {
+    if irregular_pair(q, tok) || suffix_family(q, tok, lang) || inflection_family(q, tok, lang) {
         return true;
     }
     rule.prefix_family && greek_word_family(q, tok)
@@ -6434,6 +6623,9 @@ mod tests {
 
     struct Controls {
         language: &'static str,
+        /// Declared for the query, because a rule scoped to a language is not
+        /// exercised at all by an undeclared control.
+        lang: MorphLang,
         /// Padding to reach realistic length. Asserted disjoint from every
         /// control word: the first version of this study reported the decisive
         /// Greek pair as already-related because the filler literally contained
@@ -6445,6 +6637,7 @@ mod tests {
     const CONTROL_SETS: &[Controls] = &[
         Controls {
             language: "english",
+            lang: MorphLang::English,
             filler: &[
                 "the kitchen tap dripped all evening and kept me awake",
                 "we walked beside the river until the light faded away",
@@ -6506,6 +6699,7 @@ mod tests {
             // it is here because an UNDECLARED corpus gets `COMMON`, and these
             // two are what `-en` did to it before `-en` became German-only.
             language: "dutch (undeclared)",
+            lang: MorphLang::Undeclared,
             filler: &[
                 "de kraan in de keuken heeft de hele avond gelekt",
                 "we liepen langs de rivier tot aan de brug",
@@ -6526,6 +6720,7 @@ mod tests {
         },
         Controls {
             language: "german",
+            lang: MorphLang::German,
             filler: &[
                 "der wasserhahn tropfte den ganzen abend und hielt mich wach",
                 "wir gingen am fluss entlang bis das licht verschwand",
@@ -6544,6 +6739,7 @@ mod tests {
         },
         Controls {
             language: "arabic",
+            lang: MorphLang::Undeclared,
             filler: &[
                 "تسرب الماء من الحنفية طوال المساء ولم أنم",
                 "مشينا بجانب النهر حتى غاب الضوء تماما",
@@ -6578,7 +6774,67 @@ mod tests {
             ],
         },
         Controls {
+            // The Romance languages, whose inflection tables are the newest and
+            // loosest thing in the engine. `caso`/`casa` and `porto`/`porta`
+            // are the pairs a generic shared-prefix rule could never have kept
+            // apart: they are the same shape as `libro`/`libri`, and only the
+            // fact that `o`→`a` is not an Italian plural separates them.
+            language: "italian",
+            lang: MorphLang::Italian,
+            filler: &[
+                "il rubinetto della cucina ha gocciolato tutta la sera",
+                "abbiamo camminato lungo il fiume fino al ponte",
+                "ha comprato formaggio e due bottiglie di rosso",
+                "il convoglio dalla stazione era in ritardo di un'ora",
+                "il mio vicino ha ridipinto la staccionata di verde",
+                "hanno discusso del conto e poi lo hanno diviso",
+            ],
+            pairs: &[
+                (
+                    "caso",
+                    "casa",
+                    Verdict::Apart,
+                    "case / house — o→a is no plural",
+                ),
+                ("porto", "porta", Verdict::Apart, "harbour / door"),
+                // The named price of `a`→`e`, which carries the entire Italian
+                // feminine plural. Taken deliberately, exactly as
+                // παράδειγμα/παράδεισος is for Greek.
+                (
+                    "pesca",
+                    "pesce",
+                    Verdict::Cost,
+                    "peach / fish — the a→e price",
+                ),
+            ],
+        },
+        Controls {
+            language: "russian",
+            lang: MorphLang::Russian,
+            filler: &[
+                "кран на кухне капал весь вечер и мешал спать",
+                "мы шли вдоль реки до самого моста",
+                "она купила сыр и две бутылки красного вина",
+                "поезд из аэропорта опоздал на целый час",
+                "сосед покрасил свой забор в светлый цвет",
+                "они долго спорили о счете а потом разделили его",
+                "вечером мы пили чай с хлебом и старым сыром",
+            ],
+            pairs: &[
+                // The audit names both. Nothing in the table maps a consonant
+                // to a consonant, which is what keeps them apart.
+                ("город", "горох", Verdict::Apart, "city / pea"),
+                (
+                    "сообщение",
+                    "сообщество",
+                    Verdict::Apart,
+                    "message / community",
+                ),
+            ],
+        },
+        Controls {
             language: "greek",
+            lang: MorphLang::Greek,
             filler: &[
                 "Η βρύση έσταζε όλο το βράδυ και δεν με άφησε",
                 "Περπατήσαμε δίπλα στο ποτάμι μέχρι να σβήσει το φως",
@@ -6746,7 +7002,11 @@ mod tests {
                 for (i, f) in set.filler.iter().enumerate() {
                     s.upsert(&drawer("w", "r", f, i as u32 + 1)).unwrap();
                 }
-                let hits = s.search(query, &SearchOptions::default()).unwrap();
+                let opts = SearchOptions {
+                    morph_lang: set.lang,
+                    ..Default::default()
+                };
+                let hits = s.search(query, &opts).unwrap();
                 let lexical = hits
                     .iter()
                     .find(|h| h.drawer.content == content)

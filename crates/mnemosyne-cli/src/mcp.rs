@@ -285,6 +285,12 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
                     morph_lang: match opt_str(args, "language") {
                         Some("de") | Some("german") => mnemosyne_store::MorphLang::German,
                         Some("en") | Some("english") => mnemosyne_store::MorphLang::English,
+                        Some("it") | Some("italian") => mnemosyne_store::MorphLang::Italian,
+                        Some("es") | Some("spanish") => mnemosyne_store::MorphLang::Spanish,
+                        Some("fr") | Some("french") => mnemosyne_store::MorphLang::French,
+                        Some("pt") | Some("portuguese") => mnemosyne_store::MorphLang::Portuguese,
+                        Some("ru") | Some("russian") => mnemosyne_store::MorphLang::Russian,
+                        Some("el") | Some("greek") => mnemosyne_store::MorphLang::Greek,
                         _ => mnemosyne_store::MorphLang::Undeclared,
                     },
                     wing,

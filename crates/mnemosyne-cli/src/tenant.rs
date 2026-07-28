@@ -124,6 +124,12 @@ fn morph_lang_from(body: &Value) -> mnemosyne_store::MorphLang {
     match body.get("language").and_then(Value::as_str) {
         Some("de") | Some("german") => mnemosyne_store::MorphLang::German,
         Some("en") | Some("english") => mnemosyne_store::MorphLang::English,
+        Some("it") | Some("italian") => mnemosyne_store::MorphLang::Italian,
+        Some("es") | Some("spanish") => mnemosyne_store::MorphLang::Spanish,
+        Some("fr") | Some("french") => mnemosyne_store::MorphLang::French,
+        Some("pt") | Some("portuguese") => mnemosyne_store::MorphLang::Portuguese,
+        Some("ru") | Some("russian") => mnemosyne_store::MorphLang::Russian,
+        Some("el") | Some("greek") => mnemosyne_store::MorphLang::Greek,
         _ => mnemosyne_store::MorphLang::Undeclared,
     }
 }
