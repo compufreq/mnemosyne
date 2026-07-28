@@ -145,38 +145,74 @@
   @media print { .themebtn { display: none; } }
   @media (max-width: 720px) { nav.toc ol { columns: 1; } h1 { font-size: 25px; } }
 
-  /* ---- Sidebar shell -----------------------------------------------------
-     The page grew past the point where one scroll is navigable, so sections
-     are shown one at a time with a persistent contents rail. The paging is
-     added by script (`body.paged`), never by default: with JS off or broken
-     every section stays visible and the document still reads end to end. */
-  /* Width is set so the CONTENT COLUMN and the prose measure are the same
-     number. `p` carries a 78ch cap from when this was one 1040px column, where
-     it very nearly filled; widening the page without moving it just strands
-     300px beside every paragraph. Sizing the column to the text instead of
-     capping the text inside a wider column keeps the measure honest and leaves
-     no dead band. 1160 − 48 padding − 248 rail − 44 gap = 820px of content. */
-  .shell { max-width: 1160px; margin: 0 auto; padding: 0 24px 96px;
-           display: grid; grid-template-columns: 248px minmax(0, 1fr);
-           gap: 44px; align-items: start; }
+  /* ---- The rail ---------------------------------------------------------
+     Ten sections had become one unnavigable scroll, so the page shows a single
+     section at a time behind a fixed contents rail. The paging and the rail's
+     controls are switched on by script (`body.paged`), never in the markup:
+     with JS off or broken every section stays visible, the rail is a plain
+     list of links, and the document still reads end to end. */
+  :root { --rail: 296px; }
+  .sidebar { position: fixed; inset: 0 auto 0 0; width: var(--rail); z-index: 40;
+             display: flex; flex-direction: column; overflow: hidden;
+             background: var(--card); border-right: 1px solid var(--line);
+             transition: transform .18s ease; }
+  .sb-top { display: flex; align-items: center; gap: 8px;
+            padding: 15px 12px 13px 18px; border-bottom: 1px solid var(--line); }
+  .sb-brand { flex: 1; text-decoration: none; color: var(--ink);
+              font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+  .sb-brand span { display: block; color: var(--faint); font-weight: 400; font-size: 12.5px; }
+  .sb-icon, .sb-show { border: 1px solid var(--line); background: var(--bg); color: var(--dim);
+                       border-radius: 8px; cursor: pointer; font-size: 14px; line-height: 1;
+                       padding: 7px 9px; font-family: inherit; }
+  .sb-icon:hover, .sb-show:hover { color: var(--ink); border-color: var(--line-strong); }
+  .sb-icon:focus-visible, .sb-show:focus-visible, .sb-filter input:focus-visible,
+  .sb-nav a:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .sb-filter { padding: 12px 14px 6px; }
+  .sb-filter input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
+                     padding: 7px 10px; border-radius: 8px; color: var(--ink);
+                     background: var(--bg); border: 1px solid var(--line); }
+  .sb-nav { flex: 1; overflow-y: auto; padding: 6px 10px 14px; }
+  .sb-nav ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  .sb-nav .sb-sec { counter-increment: sec; }
+  .sb-nav a { display: block; text-decoration: none; border-radius: 7px;
+              color: var(--dim); font-size: 13.5px; line-height: 1.35; }
+  .sb-link { padding: 7px 10px 7px 32px; position: relative; }
+  .sb-link::before { content: counter(sec); position: absolute; left: 11px; top: 7px;
+                     font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .sb-nav a:hover { background: var(--bg); color: var(--ink); }
+  .sb-link[aria-current="page"] { background: var(--blue-bg); color: var(--blue-ink); font-weight: 600; }
+  .sb-link[aria-current="page"]::before { color: var(--blue-ink); }
+  /* Sub-items belong to the open section only. Showing all 26 at once is a
+     wall of text that hides the ten things someone is actually choosing between. */
+  .sb-sub { list-style: none; margin: 2px 0 10px 15px; padding-left: 16px; display: none;
+            border-left: 1px solid var(--line); }
+  .sb-sec.open .sb-sub, body:not(.paged) .sb-sub { display: block; }
+  .sb-sublink { padding: 5px 9px; font-size: 12.5px; color: var(--faint); }
+  .sb-sublink[aria-current="true"] { color: var(--blue-ink); background: var(--blue-bg); }
+  .sb-sec.nomatch { display: none; }
+  .sb-foot { margin: 0; padding: 12px 18px; border-top: 1px solid var(--line);
+             font-size: 11.5px; color: var(--faint); line-height: 1.55; }
+  .sb-foot a { color: var(--blue-ink); }
+  .sb-scrim { position: fixed; inset: 0; z-index: 39; background: rgba(10,16,22,.5); }
+
+  /* The opener exists only while the rail is away. */
+  .sb-show { position: fixed; top: 14px; left: 14px; z-index: 41; display: none; }
+  body.nav-collapsed .sb-show { display: block; }
+  body.nav-collapsed .sidebar { transform: translateX(-100%); }
+  body.nav-collapsed .main-area { margin-left: 0; }
+
+  .main-area { margin-left: var(--rail); transition: margin-left .18s ease; }
+  /* 900 − 80 padding = 820px of text. The column is sized to the measure rather
+     than the measure capped inside a wider column, which is what used to strand
+     ~300px beside every paragraph. Left unbounded it reaches ~120 characters on
+     a wide monitor, which is well past readable. */
+  .wrap, .content { max-width: 900px; margin: 0 auto; padding: 0 40px 96px; }
   .content { min-width: 0; }
-  /* The column is now the measure, so the per-element caps would only re-strand
-     what the width above just recovered. */
+  /* The column is the measure now; a per-element cap would only re-stand the
+     ~300px of dead space beside every paragraph that sizing it here removed. */
   .content p, .content .lede { max-width: none; }
   .content > .doc-section > h2 { margin-top: 0; }
-  .sidebar { position: sticky; top: 24px; }
-  .sidebar nav { background: var(--card); border: 1px solid var(--line);
-                 border-radius: 10px; padding: 8px; box-shadow: 0 1px 2px var(--shadow); }
-  .sidebar ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
-  .sidebar li { counter-increment: sec; }
-  .sidebar a { display: flex; gap: 10px; align-items: baseline;
-               padding: 7px 10px; border-radius: 7px; text-decoration: none;
-               color: var(--dim); font-size: 13.5px; line-height: 1.35; }
-  .sidebar a::before { content: counter(sec); min-width: 14px; font-size: 11px;
-                       color: var(--faint); font-variant-numeric: tabular-nums; }
-  .sidebar a:hover { background: var(--bg); color: var(--ink); }
-  .sidebar a[aria-current="page"] { background: var(--blue-bg); color: var(--blue-ink); font-weight: 600; }
-  .sidebar a[aria-current="page"]::before { color: var(--blue-ink); }
+
   .secnav { display: flex; gap: 16px; margin-top: 52px;
             border-top: 1px solid var(--line); padding-top: 20px; }
   .secnav a { color: var(--blue-ink); text-decoration: none; font-size: 14px; max-width: 47%; }
@@ -184,46 +220,120 @@
   .secnav .nx { margin-left: auto; text-align: right; }
   body.paged .doc-section { display: none; }
   body.paged .doc-section.current { display: block; }
+
   /* Print and find-in-page both want the whole document, not one section. */
   @media print {
     body.paged .doc-section { display: block !important; }
-    .sidebar, .secnav, .themebtn { display: none; }
-    .shell { display: block; }
+    .sidebar, .secnav, .themebtn, .sb-show, .sb-scrim { display: none; }
+    .main-area { margin-left: 0; }
   }
-  /* Narrow: the rail becomes a contents block above the section. Deliberately
-     still one item per line — wrapping it into rows put two unrelated titles
-     side by side and read as a single sentence. */
+  /* Narrow: the rail becomes an off-canvas drawer over the content. */
   @media (max-width: 980px) {
-    .shell { grid-template-columns: 1fr; gap: 22px; padding-bottom: 64px; }
-    .sidebar { position: static; }
-    .sidebar a { padding: 8px 10px; }
+    .main-area { margin-left: 0; }
+    .sidebar { transform: translateX(-100%); box-shadow: 0 0 40px rgba(0,0,0,.3); }
+    body.nav-open .sidebar { transform: none; }
+    .sb-show { display: block; }
+    body.nav-open .sb-show { display: none; }
+    .wrap, .content { padding: 0 22px 72px; }
+    header .wrap { padding-top: 62px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar, .main-area { transition: none; }
   }
 </style>
 </head>
 <body>
+<button class="sb-show" id="sbshow" type="button" title="Show contents" aria-label="Show contents" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
 <button class="themebtn" id="themebtn" type="button" aria-live="polite">
   <span class="glyph" aria-hidden="true">◐</span><span id="themelabel">Theme</span>
 </button>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sb-top">
+    <a class="sb-brand" href="#idea">Mnemosyne <span>architecture</span></a>
+    <button class="sb-icon" id="sbhide" type="button" title="Hide contents" aria-label="Hide contents" aria-controls="sidebar" aria-expanded="true">&#8676;</button>
+  </div>
+  <div class="sb-filter">
+    <input id="navfilter" type="search" placeholder="Filter contents…" aria-label="Filter contents" autocomplete="off">
+  </div>
+<nav class="sb-nav" aria-label="Sections"><ol>
+  <li class="sb-sec" data-sec="idea">
+    <a class="sb-link" href="#idea">The one idea</a>
+  </li>
+  <li class="sb-sec" data-sec="domain">
+    <a class="sb-link" href="#domain">Palace, wing, room, drawer</a>
+    <ul class="sb-sub">
+      <li><a class="sb-sublink" href="#domain-drawer-the-unit-of-memory">Drawer — the unit of memory</a></li>
+      <li><a class="sb-sublink" href="#domain-room-topic-session-or-ticket">Room — topic, session, or ticket</a></li>
+      <li><a class="sb-sublink" href="#domain-wing-the-isolation-unit-within-a-vault">Wing — the isolation unit within a vault</a></li>
+      <li><a class="sb-sublink" href="#domain-vault-the-cryptographic-boundary">Vault — the cryptographic boundary</a></li>
+    </ul>
+  </li>
+  <li class="sb-sec" data-sec="layers">
+    <a class="sb-link" href="#layers">Layers and trust boundaries</a>
+  </li>
+  <li class="sb-sec" data-sec="write">
+    <a class="sb-link" href="#write">The write path</a>
+    <ul class="sb-sub">
+      <li><a class="sb-sublink" href="#write-normalisation-has-two-modes">Normalisation has two modes</a></li>
+      <li><a class="sb-sublink" href="#write-derived-structure-added-never-substituted">Derived structure — added, never substituted</a></li>
+      <li><a class="sb-sublink" href="#write-one-transaction">One transaction</a></li>
+    </ul>
+  </li>
+  <li class="sb-sec" data-sec="retrieval">
+    <a class="sb-link" href="#retrieval">The retrieval stack</a>
+    <ul class="sb-sub">
+      <li><a class="sb-sublink" href="#retrieval-stage-2-candidate-prefilter-opt-in">Stage 2 — candidate prefilter opt-in</a></li>
+      <li><a class="sb-sublink" href="#retrieval-stage-3-verify-decrypt-score">Stage 3 — verify, decrypt, score</a></li>
+      <li><a class="sb-sublink" href="#retrieval-stage-4-the-relevance-gate">Stage 4 — the relevance gate</a></li>
+      <li><a class="sb-sublink" href="#retrieval-stage-5-second-stage-opt-in">Stage 5 — second stage opt-in</a></li>
+      <li><a class="sb-sublink" href="#retrieval-stage-6-select-top-k">Stage 6 — select top-k</a></li>
+      <li><a class="sb-sublink" href="#retrieval-stage-7-assemble-context-caller-side">Stage 7 — assemble context caller side</a></li>
+    </ul>
+  </li>
+  <li class="sb-sec" data-sec="recall">
+    <a class="sb-link" href="#recall">Recall vs precision, measured</a>
+  </li>
+  <li class="sb-sec" data-sec="language">
+    <a class="sb-link" href="#language">Languages</a>
+    <ul class="sb-sub">
+      <li><a class="sb-sublink" href="#language-the-fold-and-what-it-deliberately-leaves-alo">The fold, and what it deliberately leaves alone</a></li>
+      <li><a class="sb-sublink" href="#language-splitting-a-script-that-has-no-spaces">Splitting a script that has no spaces</a></li>
+      <li><a class="sb-sublink" href="#language-reaching-a-word-s-other-forms">Reaching a word's other forms</a></li>
+      <li><a class="sb-sublink" href="#language-what-each-declaration-costs">What each declaration costs</a></li>
+      <li><a class="sb-sublink" href="#language-dates-eras-and-calendars">Dates, eras and calendars</a></li>
+    </ul>
+  </li>
+  <li class="sb-sec" data-sec="security">
+    <a class="sb-link" href="#security">Security model</a>
+  </li>
+  <li class="sb-sec" data-sec="config">
+    <a class="sb-link" href="#config">Configuration reference</a>
+    <ul class="sb-sub">
+      <li><a class="sb-sublink" href="#config-core">Core</a></li>
+      <li><a class="sb-sublink" href="#config-retrieval">Retrieval</a></li>
+      <li><a class="sb-sublink" href="#config-models">Models</a></li>
+      <li><a class="sb-sublink" href="#config-optional-llm-for-refine-only">Optional LLM (for refine only)</a></li>
+      <li><a class="sb-sublink" href="#config-server-and-multi-tenancy">Server and multi-tenancy</a></li>
+      <li><a class="sb-sublink" href="#config-remote-vector-backends-untrusted-accelerator">Remote vector backends untrusted accelerators</a></li>
+      <li><a class="sb-sublink" href="#config-observability-compiled-out-by-default">Observability compiled out by default</a></li>
+      <li><a class="sb-sublink" href="#config-per-request-options-not-environment">Per-request options (not environment)</a></li>
+    </ul>
+  </li>
+  <li class="sb-sec" data-sec="defaults">
+    <a class="sb-link" href="#defaults">Why the defaults are what they are</a>
+  </li>
+</ol></nav>
+  <p class="sb-foot">Engine v0.42.0 · BUSL-1.1<br><a href="diagrams/">SVG</a> · <a href="pdf/">PDF</a></p>
+</aside>
+<div class="sb-scrim" id="sbscrim" hidden></div>
+<div class="main-area" id="mainarea">
 <header><div class="wrap">
   <h1>Mnemosyne architecture</h1>
   <p class="sub">How a memory is stored, protected, and found again — the palace model, the retrieval stack, the write path, and every knob that changes their behaviour.</p>
   <p class="meta">Engine v0.42.0 · light and dark themes, following your system by default ·
      diagrams also available as <a href="diagrams/">SVG</a> and <a href="pdf/">PDF</a></p>
 </div></header>
-
-<div class="shell">
-<aside class="sidebar"><nav aria-label="Sections"><ol>
-  <li><a href="#idea">The one idea</a></li>
-  <li><a href="#domain">Palace, wing, room, drawer</a></li>
-  <li><a href="#layers">Layers and trust boundaries</a></li>
-  <li><a href="#write">The write path</a></li>
-  <li><a href="#retrieval">The retrieval stack</a></li>
-  <li><a href="#recall">Recall vs precision, measured</a></li>
-  <li><a href="#language">Languages</a></li>
-  <li><a href="#security">Security model</a></li>
-  <li><a href="#config">Configuration reference</a></li>
-  <li><a href="#defaults">Why the defaults are what they are</a></li>
-</ol></nav></aside>
 <main class="content" id="content">
 
 <section class="doc-section" id="idea" aria-labelledby="h_idea">
@@ -322,14 +432,14 @@
 <figcaption>The domain model. <a href="diagrams/domain-model.svg">SVG</a> · <a href="pdf/domain-model.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>Drawer — the unit of memory</h3>
+<h3 id="domain-drawer-the-unit-of-memory">Drawer — the unit of memory</h3>
 <p>One verbatim chunk of content plus its metadata. Its identity is deliberately <em>structural</em>, not content-based:</p>
 <p><code>drawer_id = hash(wing, room, source, chunk_index, normalize_version)</code></p>
 <p>Content is not in that hash. This is what makes re-mining a source idempotent: process the same file twice and the same chunk lands in the same slot, updating in place instead of creating a duplicate. It also means changing any of those five inputs changes the drawer's identity — which is why giving <code>room</code> new meaning only applies to newly created vaults.</p>
 <p><strong>A save that arrives through an API has no source</strong> to be the fourth chunk of, so <code>chunk_index</code> carries a unique append index instead of a position, and identity becomes unique-per-call rather than idempotent: posting the same text twice creates two drawers. That is the intended reading — the same words written on a different day are a different event, not a mistake to be silently swallowed. Collapsing repeats is deduplication's job, and it keeps every date the text appeared on rather than discarding all but one.</p>
 <p>The append index has to be monotonic. It once came from <code>COUNT(*)</code>, which <em>decreases</em> when a drawer is deleted — so the next save was handed an index still in use, derived an id that already existed, and overwrote the unrelated drawer holding it. It now comes from SQLite's <code>AUTOINCREMENT</code> sequence, which never reuses a rowid.</p>
 
-<h3>Room — topic, session, or ticket</h3>
+<h3 id="domain-room-topic-session-or-ticket">Room — topic, session, or ticket</h3>
 <p>A room groups drawers within a wing and doubles as a search filter. Because it is both a label and a predicate, it can carry real structure — one room per conversation session, per support ticket, per meeting — at no extra cost. The distilled knowledge surface uses this: fact-drawers live in their own room (<code>facts</code> by default), so a caller chooses between verbatim recall, distilled facts, or both purely by varying the room filter.</p>
 
 <div class="note">
@@ -338,10 +448,10 @@
   <p>That check is what makes a fact's <strong>grounding</strong> knowable: <code>stated</code> when the note's own words support it, <code>background</code> when they do not, and <code>unevaluated</code> for facts distilled before the check existed — three states, because "we did not look" and "we looked and found nothing" are different claims. Background is a provenance kind, <em>not</em> a quality grade: "Leeds is in the United Kingdom" is absent from the note and is exactly the edge that answers which country someone works in. Filtering is opt-in and the default returns all three, because excluding background facts would break the multi-hop questions a graph exists to answer.</p>
 </div>
 
-<h3>Wing — the isolation unit within a vault</h3>
+<h3 id="domain-wing-the-isolation-unit-within-a-vault">Wing — the isolation unit within a vault</h3>
 <p>A person, a project, or a tenant's user. Search is normally wing-scoped, so a wing bounds how much work every retrieval stage has to do.</p>
 
-<h3>Vault — the cryptographic boundary</h3>
+<h3 id="domain-vault-the-cryptographic-boundary">Vault — the cryptographic boundary</h3>
 <p>Each vault has its own key, derived from the palace master key via HKDF, and every sealed artifact binds the vault identity into its AEAD associated data. Cross-vault access therefore fails <em>cryptographically</em>, not merely because a check rejected it. One vault is one SQLite database with one audit chain.</p>
 
 <div class="note teal">
@@ -554,7 +664,7 @@
 <figcaption>One drawer being written. <a href="diagrams/write-path.svg">SVG</a> · <a href="pdf/write-path.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>Normalisation has two modes</h3>
+<h3 id="write-normalisation-has-two-modes">Normalisation has two modes</h3>
 <p>A safety floor applies always: NUL and lone control characters are stripped (they corrupt terminals and log pipelines) and CRLF becomes LF so hashes are stable across platforms. Tabs and newlines always survive.</p>
 <table>
   <thead><tr><th>Mode</th><th>Additional behaviour</th><th>Chosen for</th></tr></thead>
@@ -565,7 +675,7 @@
 </table>
 <p>The reason for the split is simple: in a Python file leading whitespace <em>is</em> the semantics, and a trailing-space diff is a real change. Tidying it away is a silent edit to user data. <code>normalize_version</code> is stamped into each drawer's metadata and into its id, so a change in normalisation output is detectable rather than invisible.</p>
 
-<h3>Derived structure — added, never substituted</h3>
+<h3 id="write-derived-structure-added-never-substituted">Derived structure — added, never substituted</h3>
 <table>
   <thead><tr><th>Field</th><th>What it holds</th><th>How it is produced</th></tr></thead>
   <tbody>
@@ -588,7 +698,7 @@
   <p>With no anchor, a relative time mention is recorded <em>unresolved</em> rather than assigned a plausible date. An honest gap is useful; an invented date is the failure mode this design exists to remove. The extraction runs inside the drawer constructor rather than at each call site, so no write path — REST, MCP, CLI, mining, import, sweeper — can silently skip it.</p>
 </div>
 
-<h3>One transaction</h3>
+<h3 id="write-one-transaction">One transaction</h3>
 <p>Sealing the content and embedding, computing the row tag, and appending to the audit chain all happen inside a single SQLite transaction. There is no committed write that lacks its audit entry. Bulk ingest takes one transaction and one manifest anchor per <em>batch</em> rather than per drawer, measured at roughly 55× fewer fsyncs on a 200-drawer import.</p>
 
 <div class="note green">
@@ -704,17 +814,17 @@
 <figcaption>One query descending the stack, with measured latencies. <a href="diagrams/retrieval-stack.svg">SVG</a> · <a href="pdf/retrieval-stack.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>Stage 2 — candidate prefilter <span class="pill off">opt-in</span></h3>
+<h3 id="retrieval-stage-2-candidate-prefilter-opt-in">Stage 2 — candidate prefilter <span class="pill off">opt-in</span></h3>
 <p>By default, search scans the wing. Past a certain size that becomes the dominant cost, and three approximate tiers exist to avoid it: <strong>PQ/IVF</strong> clusters vectors into lists and probes only the nearest ones (roughly O(√N)), <strong>MUVERA FDE</strong> gives token-aware candidates, and an experimental in-memory <strong>HNSW</strong> graph gives O(log N).</p>
 <div class="note violet">
   <span class="tag">Measured</span>
   <p>On a deliberately adversarial 20,000-drawer corpus (every query lexically matching every drawer), flat scan ran at <strong>499 ms</strong> p50 while <code>MNEMOSYNE_RETRIEVAL=pq</code> ran at <strong>12 ms</strong> p50 — a 41× difference. Two caveats before enabling it anywhere that matters: these tiers are <em>approximate</em>, so recall must be checked against a flat baseline first; and the first query after ingest pays a one-time index build (66 s in that test), which wants warming at startup rather than ambushing a user.</p>
 </div>
 
-<h3>Stage 3 — verify, decrypt, score</h3>
+<h3 id="retrieval-stage-3-verify-decrypt-score">Stage 3 — verify, decrypt, score</h3>
 <p>Every candidate row's HMAC is verified before its content is used; integrity is not an optional tier. Scoring then fuses a lexical BM25 signal with cosine semantic similarity. <code>MNEMOSYNE_FUSION</code> selects <code>bm25</code> (the default), <code>rrf</code> for reciprocal-rank fusion, or <code>legacy</code>.</p>
 
-<h3>Stage 4 — the relevance gate</h3>
+<h3 id="retrieval-stage-4-the-relevance-gate">Stage 4 — the relevance gate</h3>
 <p>An unrelated record still scores around 0.35 from the neutral cosine midpoint alone, so the gate demands actual evidence: <code>lexical &gt; 0 || semantic &gt; <em>gate</em></code>. Failing rows are removed, not merely down-ranked.</p>
 <p>That threshold is <strong>a property of the embedder, not a constant</strong>. The default hashed embedder puts unrelated text at a cosine of almost exactly zero, so its gate sits at 0.56 — but a trained encoder does not behave that way at all, and E5- and BGE-family models place <em>unrelated</em> pairs near 0.75. A single shared number would therefore sit <em>below</em> a model's floor, making the disjunct vacuously true for every hit and silently retiring the gate. Each embedder now declares its own gate or has it measured against known-unrelated probe pairs at open; an external vault, whose vectors come from a model this process has never seen, refuses semantic-only admission until an operator declares one. <code>MNEMOSYNE_SEMANTIC_GATE</code> overrides it.</p>
 <div class="note red">
@@ -722,17 +832,17 @@
   <p>Because <code>lexical &gt; 0</code> passes on <em>any</em> shared term, this gate rarely empties a result set in practice. A caller cannot use "the gate rejected everything" as a signal that the corpus lacks an answer — measured on an adversarial benchmark, unanswerable questions received exactly as much context as answerable ones. Deciding that retrieved text fails to answer a question requires reading it against the question, which is the answering model's job, not retrieval's. What the layer does provide is per-hit <code>score</code>, <code>semantic</code>, and <code>lexical</code> values so a caller can set its own policy.</p>
 </div>
 
-<h3>Stage 5 — second stage <span class="pill off">opt-in</span></h3>
+<h3 id="retrieval-stage-5-second-stage-opt-in">Stage 5 — second stage <span class="pill off">opt-in</span></h3>
 <p>A cross-encoder rescores the top-N candidates on the full (query, content) pair — the interaction a bi-encoder cannot capture — then results are re-sorted. Alternatively ColBERT late interaction computes MaxSim over token matrices built at ingest. Bounded to <code>MNEMOSYNE_RERANK_TOP_N</code> forward passes, default 50.</p>
 
-<h3>Stage 6 — select top-k</h3>
+<h3 id="retrieval-stage-6-select-top-k">Stage 6 — select top-k</h3>
 <p>Results are truncated to the requested limit. An optional <code>room_cap</code> takes at most <em>N</em> hits per room and then refills any remaining slots in score order — a soft cap, so a genuinely single-room question still receives the full limit and recall is never traded for spread.</p>
 <div class="note amber">
   <span class="tag">Measured — enable with care</span>
   <p>On a corpus where evidence is <em>concentrated</em> (one session holds the answer), <code>room_cap=2</code> measured <strong>5.6 points worse</strong> overall. Forcing room diversity pulls in unrelated sessions and displaces the chunks that actually contained the answer. Spreading trades precision for breadth; when precision is what the question needs, that trade loses. Default off for this reason.</p>
 </div>
 
-<h3>Stage 7 — assemble context <span class="pill exp">caller side</span></h3>
+<h3 id="retrieval-stage-7-assemble-context-caller-side">Stage 7 — assemble context <span class="pill exp">caller side</span></h3>
 <p>The final step belongs to whoever builds the prompt: label each hit with its <code>content_date</code>, optionally order them chronologically, then hand the text to the model.</p>
 <nav class="secnav"><a class="pv" href="#write">← The write path</a><a class="nx" href="#recall">Recall vs precision, measured →</a></nav>
 </section>
@@ -888,7 +998,7 @@
 <figcaption>Folding, then splitting — one path taken by the query and the drawer alike. <a href="diagrams/language-tokens.svg">SVG</a> · <a href="pdf/language-tokens.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>The fold, and what it deliberately leaves alone</h3>
+<h3 id="language-the-fold-and-what-it-deliberately-leaves-alo">The fold, and what it deliberately leaves alone</h3>
 <p>Every comparison — query against drawer, on both the lexical and the embedding side — runs over a folded <em>comparison key</em>, never over the stored bytes. The stored bytes are the user's words and stay exactly as given; the fold exists only so that two spellings of one word can meet.</p>
 <p>Stage order carries a real constraint. Lowercasing must happen <em>before</em> marks are stripped, because <code>İ</code> is not a combining mark and the strip cannot see it — lowercasing is the operation that manufactures the <code>U+0307</code> that the strip then removes. That single ordering is why <code>İZMİR</code> folds to <code>izmir</code> rather than tokenising to the fragment <code>zmi</code>, with no Turkish-specific special-casing anywhere in the code.</p>
 <div class="note red">
@@ -896,7 +1006,7 @@
   <p>A fold that removes everything invisible is wrong, and each exception is held by a test. <strong>ZWSP is Khmer's word delimiter</strong> — stripping it destroys the only boundary that script has. <strong>ZWJ is contrastive in Malayalam</strong>, so removing it changes the word. And a blanket decompose-and-strip over Cyrillic turns <code>й</code> into <code>и</code>, merging two distinct letters; Cyrillic therefore gets only a narrow stress-mark rule plus <code>ё→е</code>.</p>
 </div>
 
-<h3>Splitting a script that has no spaces</h3>
+<h3 id="language-splitting-a-script-that-has-no-spaces">Splitting a script that has no spaces</h3>
 <p>Splitting on "not alphanumeric" finds no boundary whatsoever in Han, Kana, Hangul, Arabic, Khmer, Thai, Lao or Myanmar — every one of those characters is a Unicode letter, so an entire clause used to become a single token. The consequence was not bad ranking. Search drops a hit that has no lexical evidence and only a neutral cosine, so a query for a word the drawer plainly contained returned <em>an empty result set</em>.</p>
 <p>Segmentation emits bigrams over maximal same-script runs, and unigrams only where a single character is itself a unit of meaning — which is Han, and Han alone. Emitting unigrams in an alphabetic script would make <code>قطار</code> "match" <code>المستشفى</code> on a shared alef, and since a hit is admitted on any lexical evidence at all, that does not merely add noise to the ranking: it retires the relevance gate.</p>
 <div class="note amber">
@@ -1043,12 +1153,12 @@
 <figcaption>How the language is decided, and what each rule is allowed to admit. <a href="diagrams/language-morphology.svg">SVG</a> · <a href="pdf/language-morphology.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>Reaching a word's other forms</h3>
+<h3 id="language-reaching-a-word-s-other-forms">Reaching a word's other forms</h3>
 <p>Five rules relate a query term to a word built on it: a suffix family, an inflection family, an agglutinative family, an Arabic root family, and a table of irregular forms no rule over shape can reach. Every one of them is <strong>pairwise</strong> — it answers a question about two strings and builds no equivalence class.</p>
 <p>That constraint is the whole design, and it is why a stemmer was measured and rejected. A stemmer maps many words onto one class, so a single false friend poisons every member of it; <code>snowball_stemmers_rs</code> is spec-correct against 42,649 official test vectors and still merges Greek <code>πολύ</code> (much) with <code>πόλη</code> (city). A pairwise rule that is wrong costs exactly the pair it names.</p>
 <p>Arabic needed a different tool again. It is a root-and-pattern language, so 144 roots poured into 20 templates generate 2,859 forms once, and two words are related only when one root explains both. That is an <em>allowlist</em>: a form the table cannot generate matches nothing. Three successive attempts to do it by subsequence all failed for the same reason — <code>بيت</code>→<code>بيوت</code> (a legitimate plural) and <code>يجب</code>→<code>يجيب</code> (two unrelated verbs) are the identical string operation, and no rule over shape separates them.</p>
 
-<h3>What each declaration costs</h3>
+<h3 id="language-what-each-declaration-costs">What each declaration costs</h3>
 <p>Morphology <em>admits</em> drawers rather than merely reordering them, so every rule has a price. None is hidden; each is held by a negative control that fails in both directions, so a cost disappearing is news that must be recorded rather than quietly absorbed.</p>
 <table>
   <thead><tr><th>Declaring</th><th>Also merges — the accepted cost</th></tr></thead>
@@ -1172,7 +1282,7 @@
 <figcaption>The precedence for reading a date, and the two gaps that remain. <a href="diagrams/language-dates.svg">SVG</a> · <a href="pdf/language-dates.pdf">PDF</a></figcaption>
 </figure>
 
-<h3>Dates, eras and calendars</h3>
+<h3 id="language-dates-eras-and-calendars">Dates, eras and calendars</h3>
 <p>A date in the text is read live at query time rather than stored, which is why a fix to a scanner or a change of declared locale reaches existing vaults with no migration at all.</p>
 <p>The precedence is the interesting part. A caller can declare a calendar, but an era marker the writer typed beside the year — <code>พ.ศ.</code>, <code>هـ</code>, <code>民國</code>, <code>令和</code> — <strong>outranks that declaration</strong>. The reasoning is that a declaration is a statement about a whole corpus while the marker is the writer's statement about this one date, and reading it is evidence. Where markers on both sides disagree, they settle nothing and the declaration stands.</p>
 <p>Field order resolves the same way: what you declared, else what an unambiguous date in the same text <em>demonstrates</em> (<code>13/05</code> can only be day-first, so the writer has stated their convention by example), else what the language implies per CLDR (Arabic is <code>d/M/y</code> in every territory; English splits US from Commonwealth and therefore implies nothing), else day-first as a documented default.</p>
@@ -1224,7 +1334,7 @@
 <h2 id="h_config">Configuration reference</h2>
 <p class="lede">Everything is environment-driven, and every default is the conservative choice.</p>
 
-<h3>Core</h3>
+<h3 id="config-core">Core</h3>
 <table>
   <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1234,7 +1344,7 @@
   </tbody>
 </table>
 
-<h3>Retrieval</h3>
+<h3 id="config-retrieval">Retrieval</h3>
 <table>
   <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1249,7 +1359,7 @@
   </tbody>
 </table>
 
-<h3>Models</h3>
+<h3 id="config-models">Models</h3>
 <table>
   <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1264,7 +1374,7 @@
   </tbody>
 </table>
 
-<h3>Optional LLM (for <code>refine</code> only)</h3>
+<h3 id="config-optional-llm-for-refine-only">Optional LLM (for <code>refine</code> only)</h3>
 <table>
   <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1275,7 +1385,7 @@
   </tbody>
 </table>
 
-<h3>Server and multi-tenancy</h3>
+<h3 id="config-server-and-multi-tenancy">Server and multi-tenancy</h3>
 <table>
   <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1285,7 +1395,7 @@
   </tbody>
 </table>
 
-<h3>Remote vector backends <span class="pill exp">untrusted accelerators</span></h3>
+<h3 id="config-remote-vector-backends-untrusted-accelerator">Remote vector backends <span class="pill exp">untrusted accelerators</span></h3>
 <table>
   <thead><tr><th>Variable</th><th>Backend</th></tr></thead>
   <tbody>
@@ -1298,7 +1408,7 @@
 </table>
 <p>These receive sealed content only, and everything they return is re-verified locally. They accelerate candidate generation; they are never trusted as a source of truth.</p>
 
-<h3>Observability <span class="pill off">compiled out by default</span></h3>
+<h3 id="config-observability-compiled-out-by-default">Observability <span class="pill off">compiled out by default</span></h3>
 <table>
   <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1311,7 +1421,7 @@
 </table>
 <p>Telemetry requires a <code>--features telemetry</code> build. Default builds carry zero telemetry dependencies and emit nothing. Even when enabled, signals are metadata and counts only — never drawer content, never key material.</p>
 
-<h3>Per-request options (not environment)</h3>
+<h3 id="config-per-request-options-not-environment">Per-request options (not environment)</h3>
 <table>
   <thead><tr><th>Option</th><th>Where</th><th>Effect</th></tr></thead>
   <tbody>
@@ -1346,49 +1456,157 @@
 </main>
 </div>
 <script>
-// Section paging. Enabled here rather than in the markup so that a browser
-// with no JS gets the whole document instead of a page showing nothing.
+// Section paging + the rail's controls. Enabled here rather than in the
+// markup so a browser with no JS gets the whole document, a plain list of
+// links, and no dead buttons.
 (function () {
   var secs = [].slice.call(document.querySelectorAll('.doc-section'));
-  if (secs.length < 2) return;
-  var links = [].slice.call(document.querySelectorAll('.sidebar a[href^="#"]'));
-  var base = document.title;
+  if (!secs.length) return;
+  var body = document.body,
+      rail = document.getElementById('sidebar'),
+      hide = document.getElementById('sbhide'),
+      show = document.getElementById('sbshow'),
+      scrim = document.getElementById('sbscrim'),
+      filter = document.getElementById('navfilter'),
+      items = [].slice.call(document.querySelectorAll('.sb-sec')),
+      links = [].slice.call(document.querySelectorAll('.sb-link')),
+      subs = [].slice.call(document.querySelectorAll('.sb-sublink')),
+      narrow = window.matchMedia('(max-width: 980px)'),
+      KEY = 'mnemosyne-arch-rail',
+      base = document.title;
 
-  document.body.classList.add('paged');
+  body.classList.add('paged');
 
+  // ---- rail visibility ------------------------------------------------------
+  // Two different defaults, one control: wide screens remember a collapse,
+  // narrow ones start closed because the rail covers the text.
+  function setRail(open, remember) {
+    if (narrow.matches) {
+      body.classList.toggle('nav-open', open);
+      body.classList.remove('nav-collapsed');
+    } else {
+      body.classList.toggle('nav-collapsed', !open);
+      body.classList.remove('nav-open');
+      if (remember) { try { open ? localStorage.removeItem(KEY) : localStorage.setItem(KEY, '1'); } catch (e) {} }
+    }
+    scrim.hidden = !(narrow.matches && open);
+    hide.setAttribute('aria-expanded', String(open));
+    show.setAttribute('aria-expanded', String(open));
+    if (open && narrow.matches) rail.querySelector('.sb-brand').focus({ preventScroll: true });
+  }
+  function railOpen() {
+    return narrow.matches ? body.classList.contains('nav-open')
+                          : !body.classList.contains('nav-collapsed');
+  }
+  hide.addEventListener('click', function () { setRail(false, true); show.focus(); });
+  show.addEventListener('click', function () { setRail(true, true); });
+  scrim.addEventListener('click', function () { setRail(false, false); show.focus(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && narrow.matches && railOpen()) { setRail(false, false); show.focus(); }
+  });
+  narrow.addEventListener('change', function () { setRail(!narrow.matches, false); });
+  var collapsed = false;
+  try { collapsed = localStorage.getItem(KEY) === '1'; } catch (e) {}
+  setRail(narrow.matches ? false : !collapsed, false);
+
+  // ---- which section is showing --------------------------------------------
   function pick(id) {
     for (var i = 0; i < secs.length; i++) if (secs[i].id === id) return secs[i];
     return null;
   }
-
-  function show(id, scroll) {
+  function show_(id, scroll) {
     var target = pick(id) || secs[0];
-    secs.forEach(function (s) {
-      if (s === target) s.classList.add('current'); else s.classList.remove('current');
-    });
+    secs.forEach(function (s) { s.classList.toggle('current', s === target); });
     links.forEach(function (a) {
-      if (a.getAttribute('href').slice(1) === target.id) a.setAttribute('aria-current', 'page');
-      else a.removeAttribute('aria-current');
+      var on = a.getAttribute('href').slice(1) === target.id;
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    // The section heading is the page's subject once only one is shown.
+    items.forEach(function (li) { li.classList.toggle('open', li.dataset.sec === target.id); });
     var h = target.querySelector('h2');
     document.title = h ? h.textContent + ' — ' + base : base;
     if (scroll) window.scrollTo(0, 0);
+    spy();
   }
 
-  // Any in-page link routes, including the prev/next pair inside a section.
+  // A heading link inside a section that is not open has to switch section
+  // first, then scroll — otherwise it targets a hidden element and does nothing.
+  function sectionOf(el) {
+    while (el && el !== document.body) {
+      if (el.classList && el.classList.contains('doc-section')) return el;
+      el = el.parentNode;
+    }
+    return null;
+  }
   document.addEventListener('click', function (e) {
     var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
     if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
-    var id = a.getAttribute('href').slice(1);
-    if (!pick(id)) return;
+    var id = a.getAttribute('href').slice(1), sec = pick(id), head = null;
+    if (!sec) {
+      head = document.getElementById(id);
+      sec = sectionOf(head);
+      if (!sec) return;
+    }
     e.preventDefault();
     if (location.hash.slice(1) !== id) history.pushState(null, '', '#' + id);
-    show(id, true);
+    show_(sec.id, !head);
+    if (head) head.scrollIntoView({ block: 'start' });
+    if (narrow.matches && railOpen()) setRail(false, false);
   });
 
-  window.addEventListener('popstate', function () { show(location.hash.slice(1), true); });
-  show(location.hash.slice(1), false);
+  window.addEventListener('popstate', function () {
+    var id = location.hash.slice(1), sec = pick(id), head = null;
+    if (!sec) { head = document.getElementById(id); sec = sectionOf(head); }
+    show_(sec ? sec.id : '', !head);
+    if (head) head.scrollIntoView({ block: 'start' });
+  });
+
+  // ---- which heading is in view --------------------------------------------
+  function spy() {
+    var best = null, bestTop = -1e9;
+    [].forEach.call(document.querySelectorAll('.doc-section.current h3[id]'), function (h) {
+      var t = h.getBoundingClientRect().top - 90;
+      if (t <= 0 && t > bestTop) { bestTop = t; best = h.id; }
+    });
+    subs.forEach(function (a) {
+      if (best && a.getAttribute('href').slice(1) === best) a.setAttribute('aria-current', 'true');
+      else a.removeAttribute('aria-current');
+    });
+  }
+  var ticking = false;
+  window.addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function () { spy(); ticking = false; });
+  }, { passive: true });
+
+  // ---- filter ---------------------------------------------------------------
+  filter.addEventListener('input', function () {
+    var q = filter.value.trim().toLowerCase();
+    items.forEach(function (li) {
+      if (!q) { li.classList.remove('nomatch'); return; }
+      var hit = li.textContent.toLowerCase().indexOf(q) >= 0;
+      li.classList.toggle('nomatch', !hit);
+    });
+    // While filtering, show every surviving section's headings — the match may
+    // well be one of them, and hiding it would make the filter look broken.
+    items.forEach(function (li) {
+      if (q) li.classList.add('open');
+      else li.classList.toggle('open', li.dataset.sec === (document.querySelector('.doc-section.current') || {}).id);
+    });
+  });
+  filter.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    filter.value = '';
+    filter.dispatchEvent(new Event('input'));
+  });
+
+  var startId = location.hash.slice(1);
+  var startSec = pick(startId) || sectionOf(document.getElementById(startId));
+  show_(startSec ? startSec.id : '', false);
+  if (startSec && !pick(startId)) {
+    var h = document.getElementById(startId);
+    if (h) h.scrollIntoView({ block: 'start' });
+  }
 })();
 
 (function () {
