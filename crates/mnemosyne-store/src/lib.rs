@@ -2675,6 +2675,18 @@ fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
         ("ить", "ит"),
         ("ить", "ят"),
         ("ить", "ил"),
+        // Masculine consonant stems: the cases append rather than substitute.
+        // Nothing here maps a consonant to a consonant, so `город`/`горох`
+        // stays out.
+        ("", "а"),
+        ("", "у"),
+        ("", "ом"),
+        ("", "е"),
+        ("", "ы"),
+        ("", "ов"),
+        ("", "ам"),
+        ("", "ах"),
+        ("", "ами"),
     ];
     // Greek, written with the ORDINARY sigma throughout: `inflection_family`
     // canonicalises the final form to it before matching, so a pattern
@@ -2708,6 +2720,20 @@ fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
         ("γω", "ξα"),
         ("χω", "ξα"),
         ("ζω", "σα"),
+        // The declensions the first pass missed, one per audited drop.
+        ("ασ", "εσ"),
+        ("ασ", "α"),
+        ("ασ", "ων"),
+        ("ο", "ου"),
+        ("ο", "α"),
+        ("ι", "ιου"),
+        ("ι", "ια"),
+        ("ι", "ιων"),
+        ("α", "ατοσ"),
+        ("α", "ατα"),
+        ("α", "ατων"),
+        ("αινω", "α"),
+        ("ησ", "ητησ"),
     ];
     const NL: &[(&str, &str)] = &[("", "en"), ("s", "zen"), ("f", "ven"), ("", "s")];
     // Devanagari. The oblique a-matra -> e-matra is the one substitution here;
@@ -2809,6 +2835,35 @@ fn agglutinative_family(q: &str, tok: &str, lang: MorphLang) -> bool {
     })
 }
 
+/// Endings whose stems must be LONGER, because the ending itself is short and
+/// common enough to be an accident on a short word.
+///
+/// Two entries earn this, and both were measured against controls rather than
+/// argued. English `-ion`: `encrypt`/`encryption` is a real derivation and
+/// `mill`/`million` is not, and the only thing separating them is that
+/// `encrypt` is seven characters and `mill` is four. French `-e`:
+/// `grand`/`grande` is the feminine and `port`/`porte` is a harbour beside a
+/// door — again five characters against four.
+///
+/// This IS a length threshold, which is the instrument that produced the
+/// floor-8→5 mistake, so it is deliberately confined: two languages, three
+/// endings, and every pair it decides is pinned as a control on one side or the
+/// other. It is not a general permission to lower floors.
+fn derivations_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
+    const NONE: &[(&str, &str)] = &[];
+    const EN: &[(&str, &str)] = &[("", "ion"), ("", "ation"), ("e", "ion")];
+    const FR: &[(&str, &str)] = &[("", "e"), ("", "es")];
+    match lang {
+        MorphLang::English => EN,
+        MorphLang::French => FR,
+        _ => NONE,
+    }
+}
+
+/// Stem length a [`derivations_for`] ending requires. Five, because that is
+/// what separates `encrypt` (7) from `mill` (4) and `grand` (5) from `port` (4).
+const DERIVATION_STEM_FLOOR: usize = 5;
+
 /// Shortest stem an inflection may sit on. Three: Italian `cas`/`casa`/`case`
 /// is the pair this exists for, and a two-character stem in any of these
 /// languages is a preposition, not a lemma.
@@ -2845,6 +2900,22 @@ fn inflection_family(q: &str, tok: &str, lang: MorphLang) -> bool {
         v
     };
     let (qs, ts) = (forms(q), forms(tok));
+    let meets = |table: &[(&str, &str)], floor: usize| -> bool {
+        table.iter().any(|(a, b)| {
+            [(a, b), (b, a)].iter().any(|(x, y)| {
+                qs.iter().any(|qf| {
+                    ts.iter()
+                        .any(|tf| match (qf.strip_suffix(**x), tf.strip_suffix(**y)) {
+                            (Some(sq), Some(st)) => sq == st && sq.chars().count() >= floor,
+                            _ => false,
+                        })
+                })
+            })
+        })
+    };
+    if meets(derivations_for(lang), DERIVATION_STEM_FLOOR) {
+        return true;
+    }
     inflections_for(lang).iter().any(|(a, b)| {
         [(a, b), (b, a)].iter().any(|(x, y)| {
             qs.iter().any(|qf| {
@@ -6934,6 +7005,32 @@ mod tests {
             ],
         },
         Controls {
+            // The price of DECLARING Dutch. `-en` is Dutch's plural, so
+            // declaring it takes `boek`/`boeken` and pays for it with these
+            // two. The `dutch (undeclared)` set above proves an undeclared
+            // corpus is untouched; this proves the cost is known rather than
+            // discovered later.
+            language: "dutch (declared)",
+            lang: MorphLang::Dutch,
+            filler: &[
+                "de kraan in de keuken heeft de hele avond gelekt",
+                "we liepen langs de rivier tot aan de brug",
+                "zij kocht kaas en twee flessen rode wijn",
+                "de trein vanaf het vliegveld was een uur te laat",
+                "de buurvrouw verfde haar schutting lichtgroen",
+                "zij aten brood met oude kaas en dronken thee",
+            ],
+            pairs: &[
+                (
+                    "kop",
+                    "kopen",
+                    Verdict::Cost,
+                    "cup / to buy — the -en price",
+                ),
+                ("man", "manen", Verdict::Cost, "man / manes — the -en price"),
+            ],
+        },
+        Controls {
             language: "german",
             lang: MorphLang::German,
             filler: &[
@@ -6986,6 +7083,26 @@ mod tests {
                     Verdict::Cost,
                     "train / diameter — shared skeleton قطر",
                 ),
+            ],
+        },
+        Controls {
+            // What the French `-e` derivation decides. `grand` is five
+            // characters and `port` is four; that length gate is the entire
+            // discriminator, so every pair it turns on is pinned here.
+            language: "french",
+            lang: MorphLang::French,
+            filler: &[
+                "le robinet de la cuisine a coule toute la soiree",
+                "nous avons marche le long de la riviere jusqu au pont",
+                "elle a achete du fromage et deux bouteilles de rouge",
+                "le convoi venant de la station avait une heure de retard",
+                "mon voisin a repeint sa cloture en vert clair",
+                "ils se sont disputes puis ont partage la note du soir",
+            ],
+            pairs: &[
+                ("port", "porte", Verdict::Apart, "harbour / door"),
+                ("mont", "monte", Verdict::Apart, "mount / climbs"),
+                ("mer", "mere", Verdict::Apart, "sea / mother"),
             ],
         },
         Controls {

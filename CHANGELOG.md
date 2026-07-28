@@ -2,6 +2,30 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Eighteen of nineteen languages reach 100% of their audited paradigm on the
+  LEXICAL channel.** Aggregate 191 pairs: **55.0% → 96.9%**, and the count of
+  pairs carried by the embedder alone falls from 20 to **zero**. Only Arabic is
+  short, at 85.7%, and its six are measured-unreachable rather than untried.
+  - **Greek 83.7% → 100%**, Russian 66.7% → 100%, French 85.7% → 100%,
+    English 80.0% → 100%.
+  - `derivations_for` — endings whose stem must be LONGER, because the ending is
+    short enough to be an accident on a short word. Two languages, three
+    endings, gated at five characters: English `-ion` separates
+    `encrypt`/`encryption` (7) from `mill`/`million` (4); French `-e` separates
+    `grand`/`grande` (5) from `port`/`porte` (4). This IS a length threshold —
+    the instrument that produced the floor-8→5 mistake — so it is deliberately
+    confined and every pair it decides is pinned as a control on one side or
+    the other.
+  - **The Greek final sigma cost 40 points across two commits.** Written into
+    the table it matches nothing, because `inflection_family` canonicalises its
+    inputs to the ordinary sigma. It was fixed once, then reintroduced by the
+    next batch of entries and had to be fixed again — a table whose entries are
+    invisible to the rule that reads them looks exactly like a table that is
+    merely incomplete.
+  - 38 negative controls, all green, now including the price of *declaring*
+    Dutch (`kop`/`kopen`, `man`/`manen`) beside the proof that an undeclared
+    corpus is untouched.
+
 - **Sixteen of nineteen languages now reach 100% of their audited paradigm.**
   Aggregate lexical recall over 191 pairs: **55.0% → 89.5%**. Three mechanisms
   finished the job, each language-scoped through `MorphLang`:
