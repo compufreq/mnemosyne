@@ -2,6 +2,30 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Spanish reaches 100%, and the untested Latin languages are now measured.**
+  27 Spanish irregular verb forms join `IRREGULAR` (`ser`/`fue`, `ir`/`va`,
+  `tener`/`tiene` …), taking Spanish from 85.7% to **100%** of its audited
+  pairs. Stated honestly: that is 100% *admitted* and **4/7 lexical** — the
+  three `hablar` forms are substitutive and remain semantic-only.
+  - **French, Italian, Portuguese and Dutch had never been measured at all.**
+    First numbers, lexical channel only: Portuguese 33.3%, French 28.6%,
+    Dutch 20.0%, **Italian 0.0%**.
+  - **Italian is the new Hebrew.** Not one pair reaches a lexical channel,
+    because Italian inflection **substitutes** rather than appends: `libri` is
+    not `libro` plus anything. Every additive rule the engine owns is
+    structurally blind to it. Fixing it needs a Romance prefix-family rule with
+    a threshold far below Greek's 7 — and that threshold is exactly what needs
+    controls, since `caso`/`casa` and `porto`/`porta` are one character apart too.
+  - **`-en` is now German-only, because Dutch caught it.** In the common set it
+    admitted `kop`/`kopen` (cup / to buy) and `man`/`manen` (man / manes) while
+    buying English nothing — every English `-en` form is irregular and named in
+    the table. Both are pinned in the shipped controls under
+    `dutch (undeclared)`, an undeclared corpus being exactly what gets the
+    common set. An ending has to earn its place in every language that might be
+    undeclared, not only the one it was added for.
+  - Aggregate over the 167-pair audit: **64.1% → 70.1%**, seven languages at
+    100% (English, German, Spanish, Hebrew, Japanese, Chinese, Thai).
+
 - **German reaches 100%, because the caller can now say it is German.**
   `MorphLang` joins `SearchOptions`, driven by the request's existing
   `language` field — one declaration, two consumers: the date scanner (`en`,

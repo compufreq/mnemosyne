@@ -2544,7 +2544,13 @@ pub enum MorphLang {
 /// folds it away long before this rule sees the word, and `Kind`/`Kinder` has
 /// no umlaut anyway.
 fn suffixes_for(lang: MorphLang) -> &'static [&'static str] {
-    const COMMON: &[&str] = &["s", "es", "ed", "ing", "en"];
+    // `-en` is German's, not everyone's. It buys English nothing — every
+    // English `-en` form here (`child`/`children`, `ox`/`oxen`) is irregular
+    // and named in the table — and measured on Dutch it admitted `kop`/`kopen`
+    // (cup / to buy) and `man`/`manen` (man / manes), two false pairs for no
+    // gain at all. An undeclared corpus should carry only endings that earn
+    // their place in every language that might be undeclared.
+    const COMMON: &[&str] = &["s", "es", "ed", "ing"];
     const GERMAN: &[&str] = &["s", "es", "ed", "ing", "en", "er"];
     match lang {
         MorphLang::German => GERMAN,
@@ -2689,6 +2695,36 @@ const IRREGULAR: &[(&str, &str)] = &[
     ("throw", "threw"),
     ("fly", "flew"),
     ("steal", "stole"),
+    // Spanish — the suppletive and stem-changing verbs. Spanish plurals are
+    // additive and the suffix rule already takes them; what it cannot take is
+    // a verb whose stem changes, and `ser`/`fue` shares no letters at all.
+    ("ser", "fue"),
+    ("ser", "es"),
+    ("ser", "era"),
+    ("ir", "fue"),
+    ("ir", "va"),
+    ("ir", "iba"),
+    ("haber", "hay"),
+    ("haber", "hubo"),
+    ("hacer", "hizo"),
+    ("hacer", "hace"),
+    ("tener", "tiene"),
+    ("tener", "tuvo"),
+    ("poder", "puede"),
+    ("poder", "pudo"),
+    ("decir", "dice"),
+    ("decir", "dijo"),
+    ("dar", "dio"),
+    ("estar", "esta"),
+    ("estar", "estuvo"),
+    ("querer", "quiere"),
+    ("venir", "viene"),
+    ("venir", "vino"),
+    ("saber", "sabe"),
+    ("saber", "supo"),
+    ("ver", "vio"),
+    ("poner", "puso"),
+    ("salir", "sale"),
     // German — strong verbs, present 3sg and preterite against the infinitive.
     // The fold has already resolved the umlauts, so these are written as the
     // fold leaves them.
@@ -6463,6 +6499,29 @@ mod tests {
                 ("corn", "corner", Verdict::Apart, "-er hazard"),
                 ("butt", "butter", Verdict::Apart, "-er hazard"),
                 ("cow", "cower", Verdict::Apart, "-er hazard"),
+            ],
+        },
+        Controls {
+            // Dutch is not a declared language and never will be by accident:
+            // it is here because an UNDECLARED corpus gets `COMMON`, and these
+            // two are what `-en` did to it before `-en` became German-only.
+            language: "dutch (undeclared)",
+            filler: &[
+                "de kraan in de keuken heeft de hele avond gelekt",
+                "we liepen langs de rivier tot aan de brug",
+                "zij kocht kaas en twee flessen rode wijn",
+                "de trein vanaf het vliegveld was een uur te laat",
+                "de buurvrouw verfde haar schutting lichtgroen",
+                "zij aten brood met oude kaas en dronken thee",
+            ],
+            pairs: &[
+                (
+                    "kop",
+                    "kopen",
+                    Verdict::Apart,
+                    "cup / to buy — the -en cost",
+                ),
+                ("man", "manen", Verdict::Apart, "man / manes — the -en cost"),
             ],
         },
         Controls {
