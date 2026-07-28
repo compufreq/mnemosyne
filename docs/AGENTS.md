@@ -286,7 +286,7 @@ already-ingested corpus answers correctly the moment you declare its conventions
 | `language` | `en`, `ar` | `en` | which scanner reads the words. Arabic is a grammar, not a word list: the past marker precedes the count (`قبل ثلاثة أيام`), the dual is one word (`يومين`), period modifiers follow their noun |
 | `week_start` | `monday`, `sunday`, `saturday` | `monday` (`saturday` for `ar`) | which day begins a week — moves "last week" and every week count |
 | `date_order` | `day_first`, `month_first` | see below | which field a bare numeric date puts first |
-| `calendar` | `gregorian`, `buddhist`, `minguo`, `hijri`, `jalali` | `gregorian` | which calendar counted the year |
+| `calendar` | `gregorian`, `buddhist`, `minguo`, `hijri`, `jalali`, `reiwa`, `heisei`, `showa`, `taisho`, `meiji` | `gregorian` | which calendar counted the year, **unless a drawer names its own era** |
 
 **`date_order`** — `07/05/2023` is 7 May or 5 July and the token does not say.
 Four signals are consulted, strongest first:
@@ -310,15 +310,37 @@ script writes Gregorian dates constantly) and neither is the numeral system
 (`๒๐๒๖` is an ordinary Gregorian 2026 typed in Thai digits). An undeclared
 corpus reads years as written, so a Thai date reads 543 years high until you say
 `buddhist` — visible and correctable, where a silently dropped date is neither.
-Buddhist and Minguo are renumbered Gregorian years and convert by arithmetic;
-Hijri (**Umm al-Qura**, the Saudi civil calendar) and Jalali are different
-calendars — lunar drift, an equinox-anchored new year, different month lengths —
-so they convert as whole dates.
+Buddhist, Minguo and the five Japanese eras are renumbered Gregorian years and
+convert by arithmetic; Hijri (**Umm al-Qura**, the Saudi civil calendar) and
+Jalali are different calendars — lunar drift, an equinox-anchored new year,
+different month lengths — so they convert as whole dates. A Japanese era is
+**bounded**: 令和 begins on 1 May 2019, so 令和1年 is that May to December and
+not the whole of a year four months of which were 平成31年.
 
-Not yet read: **era markers written in the text** (`พ.ศ.`, `ค.ศ.`, `هـ`, `م`,
-令和, 民國). Those would outrank a declared calendar, being the writer's statement
-about one date rather than yours about a corpus, and they are blocked on a
-tokenizer change — attached forms like `1447هـ` arrive as a single mixed token.
+**An era marker in the drawer's own words outranks what you declared.** `พ.ศ.`,
+`ค.ศ.`, `พุทธศักราช`, `คริสต์ศักราช`, `هـ`, `هجري`, `ميلادي`, `民國`, `公元`,
+`西暦`, `令和`, `平成`, `昭和`, `大正`, `明治` are read wherever they stand beside
+a year — before it, after it, or glued to it (`1447هـ`, `2568พ.ศ.`, `ค.ศ.2023`,
+`令和6年`). Your declaration is a statement about a corpus; the marker is the
+writer's statement about one date, so the more specific evidence wins. This is
+still reading, never inference — the era is written down. Markers on both sides
+that disagree settle nothing and leave your declaration standing.
+
+A **bare year** is recorded only where a marker names it: `2568` alone is a
+quantity, `พ.ศ. 2568` is the year 2025. It resolves to the whole year as a
+period (`resolved` + `resolved_end`).
+
+Three gaps here, stated rather than glossed:
+
+* **bare `م` and bare `ه` are not markers.** They are the everyday Arabic
+  abbreviations, so `٢٠٢٣م` is not read — but `م` is also *metres*, and `١٥٠٠ م`
+  is a running event that admitting the marker would file as the year 1500. The
+  unambiguous tatweel form `هـ` and the unabbreviated words carry the rest.
+* **month-name arms are Gregorian-only.** `٧ مايو ٢٠٢٣` and `May 2023` build
+  their dates without consulting a calendar at all — a *declared* calendar has
+  never reached them either — so a marker beside one is not read.
+* **CJK numeric dates** (`2023年5月7日`) are still not parsed; only the era-plus-
+  year form is.
 
 **Second stage** (`MNEMOSYNE_RERANKER`): `onnx`/`ort` = cross-encoder
 re-scoring of the top `MNEMOSYNE_RERANK_TOP_N` (default 50) — measured
