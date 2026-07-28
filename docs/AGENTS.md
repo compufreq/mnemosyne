@@ -521,6 +521,11 @@ Models: `MNEMOSYNE_EMBEDDER` (`hash`|`onnx`|`ort`) ·
 
 Retrieval: `MNEMOSYNE_RETRIEVAL` (`pq`|`fde`|`hnsw`) · `MNEMOSYNE_FUSION`
 (`bm25` default |`rrf`|`legacy`) · `MNEMOSYNE_FTS_PREFILTER_MIN` (2048) ·
+`MNEMOSYNE_SEMANTIC_GATE` (the embedder's own calibration; a number in
+`0.0..=1.0` declares the `semantic` score above which a drawer is admitted
+on cosine evidence alone, `off` refuses semantic-only admission entirely.
+Set it only if you have measured your own corpus — the default is measured
+from the embedder in hand, and an external vault refuses until you declare) ·
 `MNEMOSYNE_IVF_MIN` (8192) · `MNEMOSYNE_IVF_NPROBE` ·
 `MNEMOSYNE_PQ_PAGE_MIN` (off by default — sealed page tier: one AEAD
 page per IVF list, lazy per-probe decrypt) ·
