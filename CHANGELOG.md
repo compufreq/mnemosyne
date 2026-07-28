@@ -2,6 +2,20 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Arabic reaches 100%, and so does every other language: 191/191.**
+  Eight Arabic suppletives and irregular plurals join `IRREGULAR` — `امرأة`/`نساء`
+  (م-ر-أ against ن-س-و), `إنسان`/`ناس`, `فم`/`أفواه`, `أخ`/`إخوة`. Their plural is
+  built on a *different root*, so no root table reaches them, exactly as no
+  suffix rule reaches `go`/`went`.
+  - **This was an inconsistency, not a finding.** Suppletion had been put in
+    `IRREGULAR` for eight languages already — `человек`/`люди`, `βλέπω`/`είδα`,
+    `gehen`/`ging` — while Arabic's was written up as needing a multilingual
+    encoder. Same class, same table.
+  - Written in the **folded** orthography, because that is what the rule sees:
+    `search_key` maps `ة`→`ه` and every hamza-bearing alef to `ا`, so `امرأة`
+    arrives as `امراه`. The citation form would have matched nothing — the exact
+    failure the Greek final sigma caused twice, checked this time before writing
+    rather than after measuring.
 - **Arabic 85.7% → 97.6%, by roots rather than by shape.** The whole
   19-language audit now reads **190/191 = 99.5%** on the lexical channel, with
   zero pairs resting on the embedder.

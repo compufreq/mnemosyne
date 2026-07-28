@@ -3288,6 +3288,24 @@ const IRREGULAR: &[(&str, &str)] = &[
     ("\u{d558}\u{b2e4}", "\u{d574}\u{c694}"),
     ("\u{ba39}\u{b2e4}", "\u{ba39}\u{c5c8}\u{c5b4}\u{c694}"),
     ("\u{c774}\u{b2e4}", "\u{c608}\u{c694}"),
+    // Arabic: suppletion and the irregular plurals no root reaches, because
+    // the plural is built on a DIFFERENT root — امرأة is م-ر-أ and نساء is
+    // ن-س-و. This is the same class as `go`/`went` and `человек`/`люди`, and it
+    // belongs in the same table; treating Arabic's as uniquely encoder-only was
+    // an inconsistency, not a finding.
+    //
+    // Written in the FOLDED orthography, because that is what the rule sees:
+    // `search_key` maps ة to ه and every hamza-bearing alef to ا, so امرأة
+    // arrives as امراه. Writing the citation form here would match nothing at
+    // all — the exact failure the Greek final sigma caused twice.
+    ("امراه", "نساء"),
+    ("امراه", "نسوه"),
+    ("انسان", "ناس"),
+    ("ماء", "مياه"),
+    ("فم", "افواه"),
+    ("اخ", "اخوه"),
+    ("ابن", "ابناء"),
+    ("يد", "ايدي"),
     // Persian: the ZWNJ in the present stem is not alphanumeric, so the
     // segmenter splits it and the drawer's token is the bare stem. A table has
     // to name the token that exists, not the citation form.
