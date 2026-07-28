@@ -349,6 +349,8 @@ pub struct SaveOutcome {
 
 #[derive(Debug, Default, Clone)]
 pub struct SearchOptions {
+    /// Whose inflection applies. Declared, never detected — see [`MorphLang`].
+    pub morph_lang: MorphLang,
     pub wing: Option<String>,
     pub room: Option<String>,
     pub limit: usize,
@@ -1810,6 +1812,9 @@ impl PalaceStore {
         let _span = mnemosyne_obs::scope("search", self.vault.id());
         let obs_start = std::time::Instant::now();
         let limit = if opts.limit == 0 { 10 } else { opts.limit };
+        // Declared by the caller, never read off the text: German and English
+        // share a script, so nothing in the bytes says which endings are legal.
+        let lang = opts.morph_lang;
         let qterms: Vec<String> = tokenize(query);
 
         let candidates = if self.fde_enabled {
@@ -1955,7 +1960,7 @@ impl PalaceStore {
                 })
                 .collect::<Vec<_>>(),
             Fusion::Bm25 => {
-                let bm25 = bm25_scores(&qterms, &cands);
+                let bm25 = bm25_scores(&qterms, &cands, lang);
                 cands
                     .into_iter()
                     .zip(bm25)
@@ -1972,7 +1977,7 @@ impl PalaceStore {
                     })
                     .collect::<Vec<_>>()
             }
-            Fusion::Rrf => rrf_fuse(&qterms, cands),
+            Fusion::Rrf => rrf_fuse(&qterms, cands, lang),
         };
 
         // Relevance gate: an unrelated record still scores ~0.35 from the
@@ -2498,24 +2503,54 @@ fn skeleton_with(w: &str, weak: fn(char) -> bool) -> String {
     w.chars().filter(|c| !weak(*c)).collect()
 }
 
-/// The inflectional endings a delimiting-script word may gain, as a CLOSED set.
+/// Whose inflection applies to a comparison, declared by the caller.
 ///
-/// Deliberately not `-e`: German `Reis` (rice) + `e` is `Reise` (journey), and
-/// that pair is a control. Nothing in the target set needs it.
+/// Not detected, and not detectable: German and English share a script, so
+/// nothing in the bytes says which endings are legal. This is the same class of
+/// read-time declaration as [`mnemosyne_core::temporal::Locale`]'s `calendar`
+/// and `date_order` — the caller knows their corpus and the engine does not
+/// guess.
 ///
-/// Deliberately not `-er` either, and that one cost German its plurals.
-/// `Kind`/`Kinder` and `Haus`/`Häuser` need it; measured against the controls,
-/// enabling it admitted `flow`/`flower`, `tow`/`tower`, `corn`/`corner`,
-/// `butt`/`butter` and `cow`/`cower` — five false pairs for two real ones,
-/// because English also builds agent nouns with `-er` and the shorter word is
-/// often not the verb. One suffix set cannot serve two languages that share a
-/// script and disagree, which is the same wall the containment floor hit: it
-/// needs a language input, not a cleverer string rule.
+/// It exists because one suffix set demonstrably cannot serve two languages.
+/// See [`suffixes_for`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MorphLang {
+    /// Nothing declared: only the endings that are safe in every delimiting
+    /// script. Exactly what shipped before this existed, so an undeclared
+    /// corpus behaves as it always did.
+    #[default]
+    Undeclared,
+    English,
+    German,
+}
+
+/// The inflectional endings a word may gain, as a CLOSED set per language.
 ///
-/// The umlaut would have been the discriminator — `Häuser`, `Bücher`, `Männer`
-/// all carry one and `flower` cannot — but `search_key` folds it away long
-/// before this rule sees the word, and `Kind`/`Kinder` has no umlaut anyway.
-const LATIN_SUFFIXES: &[&str] = &["s", "es", "ed", "ing", "en"];
+/// Deliberately never `-e`: German `Reis` (rice) + `e` is `Reise` (journey),
+/// and that pair is a control.
+///
+/// **`-er` is the reason this function takes a language at all.** German needs
+/// it for `Kind`/`Kinder`, `Haus`/`Häuser`, `Buch`/`Bücher`. English cannot
+/// have it: measured against the controls, enabling it for English admitted
+/// `flow`/`flower`, `tow`/`tower`, `corn`/`corner`, `butt`/`butter` and
+/// `cow`/`cower` — five false pairs for two real ones, because English also
+/// builds agent nouns with `-er` and the shorter word is frequently not the
+/// verb. Note the population instrument could NOT see this: adding `-er` moved
+/// promiscuity by +0.21 links per query, indistinguishable from safe. Only the
+/// negative controls caught it.
+///
+/// The umlaut would have discriminated without any declaration — `Häuser`,
+/// `Bücher`, `Männer` all carry one and `flower` cannot — but `search_key`
+/// folds it away long before this rule sees the word, and `Kind`/`Kinder` has
+/// no umlaut anyway.
+fn suffixes_for(lang: MorphLang) -> &'static [&'static str] {
+    const COMMON: &[&str] = &["s", "es", "ed", "ing", "en"];
+    const GERMAN: &[&str] = &["s", "es", "ed", "ing", "en", "er"];
+    match lang {
+        MorphLang::German => GERMAN,
+        MorphLang::Undeclared | MorphLang::English => COMMON,
+    }
+}
 
 /// Shortest stem this rule will inflect. Three, because `run`/`running` is the
 /// pair it exists for — and three is safe HERE in a way it is not for
@@ -2538,7 +2573,7 @@ const SUFFIX_STEM_FLOOR: usize = 3;
 /// Final-consonant doubling is handled because English requires it: `running`
 /// is `run` + `n` + `ing`, and without the undoubling the pair this rule exists
 /// for does not match.
-fn suffix_family(q: &str, tok: &str) -> bool {
+fn suffix_family(q: &str, tok: &str, lang: MorphLang) -> bool {
     let (short, long) = if q.chars().count() <= tok.chars().count() {
         (q, tok)
     } else {
@@ -2553,7 +2588,7 @@ fn suffix_family(q: &str, tok: &str) -> bool {
         .next_back()
         .map(|c| format!("{short}{c}"))
         .unwrap_or_default();
-    LATIN_SUFFIXES.iter().any(|suf| {
+    suffixes_for(lang).iter().any(|suf| {
         long.strip_suffix(suf)
             .is_some_and(|stem| stem == short || stem == doubled)
     })
@@ -2782,7 +2817,7 @@ fn morph_rule_for(w: &str) -> Option<MorphRule> {
 
 /// Does a morphological relation hold — the admitting half of the morph
 /// channel, dispatched per script.
-fn morph_relation(q: &str, tok: &str) -> bool {
+fn morph_relation(q: &str, tok: &str, lang: MorphLang) -> bool {
     let Some(rule) = morph_rule_for(q) else {
         return false;
     };
@@ -2833,7 +2868,7 @@ fn morph_relation(q: &str, tok: &str) -> bool {
     // of the rule, and Greek's beneficiaries are nine real paradigm forms.
     // A named irregular form, and a regular ending on a stem the two share.
     // Both are pairwise and neither creates a class.
-    if irregular_pair(q, tok) || suffix_family(q, tok) {
+    if irregular_pair(q, tok) || suffix_family(q, tok, lang) {
         return true;
     }
     rule.prefix_family && greek_word_family(q, tok)
@@ -2935,7 +2970,7 @@ struct Bm25 {
 /// Approximate evidence counts, but never as much as saying the word.
 const APPROX_WEIGHT: f32 = 0.5;
 
-fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
+fn bm25_raw(qterms: &[String], cands: &[Candidate], lang: MorphLang) -> Bm25 {
     let n = cands.len();
     if n == 0 || qterms.is_empty() {
         return Bm25 {
@@ -2979,7 +3014,7 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
             }
             // Checked before the general fuzzy scan so containment lands in
             // its own channel rather than being absorbed as approximate.
-            if let Some(j) = qterms.iter().position(|q| morph_relation(q, tok)) {
+            if let Some(j) = qterms.iter().position(|q| morph_relation(q, tok, lang)) {
                 tf_morph[i][j] = 1;
                 continue;
             }
@@ -3062,8 +3097,8 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate]) -> Bm25 {
 /// BM25 squashed into [0,1] for the linear blend: `raw / (raw + k_sat)`,
 /// so one strong term match sits near 0.5 and additional evidence climbs
 /// toward 1 without ever forcing a top candidate to exactly 1.0.
-fn bm25_scores(qterms: &[String], cands: &[Candidate]) -> Vec<(f32, f32, f32)> {
-    let b = bm25_raw(qterms, cands);
+fn bm25_scores(qterms: &[String], cands: &[Candidate], lang: MorphLang) -> Vec<(f32, f32, f32)> {
+    let b = bm25_raw(qterms, cands, lang);
     if b.k_sat <= 0.0 {
         return vec![(0.0, 0.0, 0.0); cands.len()];
     }
@@ -3112,8 +3147,8 @@ fn ranks_desc_positive(vals: &[f32]) -> Vec<Option<usize>> {
 /// blend's recency weight). Scale-free: no semantic/lexical weight to tune,
 /// only rank positions. `lexical` is reported as the squashed BM25 so the
 /// caller's relevance gate treats it exactly like the BM25 blend.
-fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>) -> Vec<SearchHit> {
-    let b = bm25_raw(qterms, &cands);
+fn rrf_fuse(qterms: &[String], cands: Vec<Candidate>, lang: MorphLang) -> Vec<SearchHit> {
+    let b = bm25_raw(qterms, &cands, lang);
     let (raw, k_sat) = (b.raw, b.k_sat);
     let sem: Vec<f32> = cands.iter().map(|c| c.semantic).collect();
     let rec: Vec<f32> = cands.iter().map(|c| c.recency).collect();
@@ -3316,6 +3351,7 @@ mod tests {
             .search(
                 "zebra lockfile note",
                 &SearchOptions {
+                    morph_lang: Default::default(),
                     limit: 3,
                     ..Default::default()
                 },
@@ -3326,6 +3362,7 @@ mod tests {
             .search(
                 "zebra lockfile note",
                 &SearchOptions {
+                    morph_lang: Default::default(),
                     limit: 3,
                     room_cap: Some(1),
                     ..Default::default()
@@ -3447,6 +3484,7 @@ mod tests {
                 .search(
                     "bulk drawer number",
                     &SearchOptions {
+                        morph_lang: Default::default(),
                         wing: None,
                         room: None,
                         limit: 5,
@@ -3519,6 +3557,7 @@ mod tests {
                 .search(
                     "kafka stream backlog",
                     &SearchOptions {
+                        morph_lang: Default::default(),
                         wing: None,
                         room: None,
                         limit: 2,
@@ -4136,6 +4175,7 @@ mod tests {
             ))
             .unwrap();
         let opts = SearchOptions {
+            morph_lang: Default::default(),
             wing: None,
             room: None,
             limit: 3,
@@ -4556,6 +4596,7 @@ mod tests {
             .search(
                 "alpha",
                 &SearchOptions {
+                    morph_lang: Default::default(),
                     wing: Some("a".into()),
                     room: None,
                     limit: 10,
@@ -6005,7 +6046,7 @@ mod tests {
             cand("die donaudampfschifffahrtsgesellschaft tagt heute"),
             cand("ein bericht ueber ganz andere dinge"),
         ];
-        let b = bm25_raw(&qterms, &cands);
+        let b = bm25_raw(&qterms, &cands, MorphLang::Undeclared);
         assert_eq!(b.exact[0], 0.0, "the drawer did not say the word");
         assert!(b.morph[0] > 0.0, "but it holds a word built on it");
         assert!(b.raw[0] > 0.0, "and it ranks");
@@ -6013,7 +6054,7 @@ mod tests {
         // Discounted for ranking exactly like approximate evidence: an exact
         // match on the same term must still outrank it.
         let exact_cands = vec![cand("dampfschifffahrt ist das thema")];
-        let e = bm25_raw(&qterms, &exact_cands);
+        let e = bm25_raw(&qterms, &exact_cands, MorphLang::Undeclared);
         assert!(e.exact[0] > 0.0);
     }
 
@@ -6103,7 +6144,7 @@ mod tests {
             cand("the document was filed"),
             cand("read the documentation"),
         ];
-        let b = bm25_raw(&qterms, &cands);
+        let b = bm25_raw(&qterms, &cands, MorphLang::Undeclared);
         assert_eq!(b.exact[0], 0.0, "a family match is not exact evidence");
         assert!(b.raw[0] > 0.0, "but it does contribute to ranking");
         assert!(b.exact[1] > 0.0, "the literal term is exact evidence");
@@ -6564,17 +6605,46 @@ mod tests {
         }
     }
 
-    /// German keeps its strong verbs and loses its plurals, and the reason is
-    /// recorded rather than glossed: `Kind`/`Kinder` and `Haus`/`Häuser` need
-    /// `-er`, which English cannot have. See [`LATIN_SUFFIXES`].
+    /// German plurals need `-er`, which English cannot have — so they reach
+    /// exactly when the caller declares German, and not otherwise.
+    ///
+    /// The last line pins the price of declaring it: under `MorphLang::German`
+    /// an English word pair like `flow`/`flower` WOULD meet. That is correct
+    /// behaviour, not a bug — the caller said this corpus is German — but it is
+    /// the reason the declaration is per request and never inferred.
     #[test]
-    fn german_strong_verbs_reach_but_the_plurals_do_not() {
+    fn german_plurals_reach_only_where_german_is_declared() {
         assert!(irregular_pair("gehen", "ging"));
         assert!(irregular_pair("sprechen", "spricht"));
+        // Declared German: the plurals reach, because `-er` is legal here.
+        for (a, b) in [("kind", "kinder"), ("haus", "hauser"), ("buch", "bucher")] {
+            assert!(
+                suffix_family(a, b, MorphLang::German),
+                "{a}/{b} must reach under declared German"
+            );
+        }
+        // Undeclared and English: they do not, and five English controls are
+        // why. The declaration is the whole mechanism.
+        for lang in [MorphLang::Undeclared, MorphLang::English] {
+            assert!(!suffix_family("kind", "kinder", lang), "{lang:?}");
+            assert!(!suffix_family("flow", "flower", lang), "{lang:?}");
+        }
+        // And `-er` never reaches English even when German is declared for a
+        // different query: the set is chosen per request, not per word.
+        assert!(
+            suffix_family("flow", "flower", MorphLang::German),
+            "known cost"
+        );
         // The recorded gap. Both would pass with `-er` in the suffix set, and
         // five English controls would fail with it.
-        assert!(!suffix_family("kind", "kinder"), "needs a language input");
-        assert!(!suffix_family("haus", "hauser"), "needs a language input");
+        assert!(
+            !suffix_family("kind", "kinder", MorphLang::Undeclared),
+            "needs a language input"
+        );
+        assert!(
+            !suffix_family("haus", "hauser", MorphLang::Undeclared),
+            "needs a language input"
+        );
     }
 
     #[test]
@@ -6745,24 +6815,49 @@ mod tests {
         for (lang, file) in [("ENGLISH", "en"), ("GERMAN", "de")] {
             let v = load_words(&format!("testdata/{file}_50k.txt"), latin_char);
             let q: Vec<String> = v.iter().take(500).cloned().collect();
-            println!("
-=== {lang} (vocab {}) ===", v.len());
+            println!(
+                "
+=== {lang} (vocab {}) ===",
+                v.len()
+            );
             report("shipped containment floor 8", &q, &v, |a, b| {
                 let (an, bn) = (a.chars().count(), b.chars().count());
-                an.min(bn) >= 8 && if an <= bn { b.contains(a) } else { a.contains(b) }
+                an.min(bn) >= 8
+                    && if an <= bn {
+                        b.contains(a)
+                    } else {
+                        a.contains(b)
+                    }
             });
-            report("NEW suffix_family", &q, &v, |a, b| suffix_family(a, b));
+            report("NEW suffix_family", &q, &v, |a, b| {
+                suffix_family(a, b, MorphLang::Undeclared)
+            });
             report("suffix_family WITH -er", &q, &v, |a, b| {
-                let (s, l) = if a.chars().count() <= b.chars().count() { (a, b) } else { (b, a) };
-                if s.chars().count() < 3 || s == l { return false; }
-                let d = s.chars().next_back().map(|c| format!("{s}{c}")).unwrap_or_default();
-                ["s", "es", "ed", "ing", "en", "er"].iter().any(|x| {
-                    l.strip_suffix(x).is_some_and(|st| st == s || st == d)
-                })
+                let (s, l) = if a.chars().count() <= b.chars().count() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                if s.chars().count() < 3 || s == l {
+                    return false;
+                }
+                let d = s
+                    .chars()
+                    .next_back()
+                    .map(|c| format!("{s}{c}"))
+                    .unwrap_or_default();
+                ["s", "es", "ed", "ing", "en", "er"]
+                    .iter()
+                    .any(|x| l.strip_suffix(x).is_some_and(|st| st == s || st == d))
             });
             report("containment floor 3 (the reverted one)", &q, &v, |a, b| {
                 let (an, bn) = (a.chars().count(), b.chars().count());
-                an.min(bn) >= 3 && if an <= bn { b.contains(a) } else { a.contains(b) }
+                an.min(bn) >= 3
+                    && if an <= bn {
+                        b.contains(a)
+                    } else {
+                        a.contains(b)
+                    }
             });
         }
     }
@@ -6947,9 +7042,9 @@ mod tests {
                 assert_eq!(h.lexical_exact, 0.0, "{query} claimed exact evidence");
             }
         }
-        assert!(!morph_relation("45678", "456789"));
+        assert!(!morph_relation("45678", "456789", MorphLang::Undeclared));
         assert!(
-            morph_relation("document", "documentation"),
+            morph_relation("document", "documentation", MorphLang::Undeclared),
             "words still relate"
         );
     }
@@ -6980,8 +7075,12 @@ mod tests {
             }
         }
         // The relation the floor exists to keep: eight characters, genuine.
-        assert!(morph_relation("document", "documentation"));
-        assert!(!morph_relation("other", "mother"));
+        assert!(morph_relation(
+            "document",
+            "documentation",
+            MorphLang::Undeclared
+        ));
+        assert!(!morph_relation("other", "mother", MorphLang::Undeclared));
     }
 
     /// A single ideograph is one insertion from every bigram containing it.
@@ -7156,7 +7255,7 @@ mod tests {
             cand("kubernets kubernetes both forms here"),
             cand("kubernets kubernets twice the typo"),
         ];
-        let b = bm25_raw(&qterms, &cands);
+        let b = bm25_raw(&qterms, &cands, MorphLang::Undeclared);
         assert!(b.exact[0] > 0.0, "both forms are literally present");
         assert!(b.raw[0] >= b.exact[0], "blended is never below exact");
         assert!(

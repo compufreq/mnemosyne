@@ -198,11 +198,15 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   what makes a 3-char stem safe here when floor-3 containment measured 33.3
   (en) / 68.5 (de) mean links and this measures 1.08 / 0.98, capped at 5. Both
   are PAIRWISE — a stemmer builds an equivalence class one false friend
-  poisons (`πολύ`/`πόλη` is why Snowball Greek was rejected). **`-er` is
-  excluded and that costs German its plurals** (`Kind`/`Kinder`,
-  `Haus`/`Häuser`): it admits `flow`/`flower`, `corn`/`corner`, `butt`/`butter`
-  — one suffix set cannot serve two languages sharing a script, and that needs
-  a LANGUAGE INPUT, the same wall the containment floor hit. Note promiscuity
+  poisons (`πολύ`/`πόλη` is why Snowball Greek was rejected). `-er` is
+  German-only via `MorphLang` on `SearchOptions` (`suffixes_for`), fed by the
+  request's existing `language` — ONE declaration, two consumers: the date
+  scanner (en/ar) and morphology (en/de). For English `-er` admits
+  `flow`/`flower`, `corn`/`corner`, `butt`/`butter`; declared German it takes
+  `Kind`/`Kinder`, `Haus`/`Häuser`, `Buch`/`Bücher` and German goes 50%→**100%**,
+  all on the lexical channel. Declared, never detected — the two share a script,
+  so nothing in the bytes says which endings are legal, and the price is pinned:
+  under German, `flow`/`flower` DOES meet. Note promiscuity
   moved only +0.21 for `-er`, i.e. **the population metric could not see it and
   the negative controls could**. `drawers_fts` is a
   **standalone** fts5 table over `search_key(content)`, rebuilt on a

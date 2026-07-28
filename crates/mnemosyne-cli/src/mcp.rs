@@ -281,6 +281,12 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
             let hits = store.search(
                 query,
                 &SearchOptions {
+                    // The same `language` the date scanner reads.
+                    morph_lang: match opt_str(args, "language") {
+                        Some("de") | Some("german") => mnemosyne_store::MorphLang::German,
+                        Some("en") | Some("english") => mnemosyne_store::MorphLang::English,
+                        _ => mnemosyne_store::MorphLang::Undeclared,
+                    },
                     wing,
                     room,
                     limit,

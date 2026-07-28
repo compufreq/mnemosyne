@@ -2,6 +2,20 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **German reaches 100%, because the caller can now say it is German.**
+  `MorphLang` joins `SearchOptions`, driven by the request's existing
+  `language` field — one declaration, two consumers: the date scanner (`en`,
+  `ar`) and morphology (`en`, `de`). Declared German enables `-er`, and
+  `Kind`/`Kinder`, `Haus`/`Häuser` and `Buch`/`Bücher` all reach the **lexical**
+  channel; `Bücher` had been semantic-only. Measured end to end: German
+  **50% → 100%** of its audited pairs, all eight on `lexical_morph`.
+  - Read-time and declared, never detected, exactly like `calendar` and
+    `date_order`. German and English share a script, so nothing in the bytes
+    says which endings are legal. Undeclared behaves exactly as before.
+  - **The price of declaring is pinned by test**: under `MorphLang::German`,
+    `flow`/`flower` *does* meet. That is correct — the caller said this corpus
+    is German — and it is precisely why the choice is per request.
+
 - **English reaches its own inflected forms.** Two pairwise rules, neither a
   stemmer and neither a floor. `suffix_family` asks whether one word is the
   other plus one ending from a **closed six-item set**, with final-consonant

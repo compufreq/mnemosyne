@@ -114,6 +114,20 @@ fn locale_from(body: &Value) -> mnemosyne_core::temporal::Locale {
     locale
 }
 
+/// Whose inflection applies to the query, from the request's `language`.
+///
+/// Read-time and declared, exactly like `calendar` and `date_order`: German and
+/// English share a script, so nothing in the bytes says which endings are legal.
+/// An unrecognised or absent value means `Undeclared`, which is the behaviour
+/// that shipped before this existed.
+fn morph_lang_from(body: &Value) -> mnemosyne_store::MorphLang {
+    match body.get("language").and_then(Value::as_str) {
+        Some("de") | Some("german") => mnemosyne_store::MorphLang::German,
+        Some("en") | Some("english") => mnemosyne_store::MorphLang::English,
+        _ => mnemosyne_store::MorphLang::Undeclared,
+    }
+}
+
 /// Triples as JSON, each labelled with where it rests.
 ///
 /// `grounding` is `stated` (the note's own words support it, at the recorded
@@ -586,6 +600,11 @@ impl Tenancy {
         let body = parse_json(body)?;
         let query = body_str(&body, "query")?;
         let opts = SearchOptions {
+            // The SAME `language` the date scanner reads. One declaration per
+            // request; each consumer documents what it supports and falls back
+            // rather than guessing. Morphology knows en and de; the temporal
+            // scanner knows en and ar.
+            morph_lang: morph_lang_from(&body),
             wing: body.get("wing").and_then(Value::as_str).map(String::from),
             room: body.get("room").and_then(Value::as_str).map(String::from),
             limit: body.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
