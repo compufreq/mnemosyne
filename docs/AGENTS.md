@@ -330,12 +330,19 @@ A **bare year** is recorded only where a marker names it: `2568` alone is a
 quantity, `พ.ศ. 2568` is the year 2025. It resolves to the whole year as a
 period (`resolved` + `resolved_end`).
 
-Three gaps here, stated rather than glossed:
+**Bare `م` and `ه` are read only where the sentence confirms them.** They
+abbreviate ميلادي and هجري, but `م` is also *metres* and `ه` a list letter, so
+the word alone settles nothing — which is the point Arabic makes about itself:
+it reads in context. A **year noun governing the number** is that context, so
+`سنة ٢٠٢٣م`, `عام ١٩٩٥ م` and `في العام ٢٠٠٠م` all resolve, while `جريت ١٥٠٠ م`
+and `على ارتفاع ٢٥٠٠م` name no date. Confirming evidence, never a blocklist —
+the same trade the `من` guard makes, and for the same reason. Note attachment is
+*not* the discriminator: an altitude is written glued exactly as a year is.
 
-* **bare `م` and bare `ه` are not markers.** They are the everyday Arabic
-  abbreviations, so `٢٠٢٣م` is not read — but `م` is also *metres*, and `١٥٠٠ م`
-  is a running event that admitting the marker would file as the year 1500. The
-  unambiguous tatweel form `هـ` and the unabbreviated words carry the rest.
+Three gaps, stated rather than glossed:
+
+* **a bare `١٩٩٥م` with no year noun near it stays unread.** That is the price
+  of the rule above, paid deliberately: a gap, where guessing would be a lie.
 * **month-name arms are Gregorian-only.** `٧ مايو ٢٠٢٣` and `May 2023` build
   their dates without consulting a calendar at all — a *declared* calendar has
   never reached them either — so a marker beside one is not read.

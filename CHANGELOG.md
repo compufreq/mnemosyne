@@ -35,13 +35,24 @@
     a wrong date rather than a rounded one. `平成31年` ends 30 April 2019 and
     `昭和64年` ran seven days. Declarable too: `reiwa`, `heisei`, `showa`,
     `taisho`, `meiji` on `/v1/search` and `mnemosyne_search`.
-  - **Three gaps, stated rather than glossed.** Bare `م` and bare `ه` are not
-    markers, so `٢٠٢٣م` is not read — `م` is also *metres*, and `١٥٠٠ م` is a
-    running event that admitting it would file as the year 1500; the unambiguous
-    tatweel form `هـ` carries the common Hijri case instead. The month-name arms
-    in both scanners build Gregorian-only and always have, so a *declared*
-    calendar never reached them either. CJK numeric dates (`2023年5月7日`) are
-    still unparsed.
+  - **A marker that is also an ordinary word is read in context, because
+    Arabic is.** Bare `م` and `ه` abbreviate ميلادي and هجري — and `م` is also
+    *metres*, `ه` a list letter — so the word alone settles nothing. A **year
+    noun governing the number** is the sentence saying which reading it means:
+    `سنة ٢٠٢٣م`, `عام ١٩٩٥ م` and `في العام ٢٠٠٠م` resolve, while `جريت ١٥٠٠ م`
+    and `على ارتفاع ٢٥٠٠م` name no date. Confirming evidence, never a blocklist,
+    which is the trade the `من` guard already makes and for the same reason;
+    the vocabulary is `AR_UNITS`' own `Unit::Year` set, so it inherits every
+    spelling, plural and article the relative arms already match. **Attachment
+    was tried first and rejected**: `٢٠٢٣م` is glued and `١٥٠٠ م` spaced, so the
+    orthography looks like the discriminator — but `على ارتفاع ٢٥٠٠م` is an
+    ordinary glued altitude, and reading it as the year 2500 is precisely the
+    fabrication this module exists to prevent.
+  - **Three gaps, stated rather than glossed.** A bare `١٩٩٥م` with no year noun
+    near it stays unread — the deliberate price of the rule above. The
+    month-name arms in both scanners build Gregorian-only and always have, so a
+    *declared* calendar never reached them either. CJK numeric dates
+    (`2023年5月7日`) are still unparsed.
 - **A date's calendar and field order are DECLARED, never inferred.** `Locale`
   gains `calendar` and `date_order` beside `language` and `week_start`, all
   read-time, so an already-ingested corpus answers correctly the moment a caller

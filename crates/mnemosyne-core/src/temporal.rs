@@ -569,13 +569,9 @@ fn read_date(cal: Calendar, y: i32, m: u8, d: u8) -> Option<Option<Date>> {
 /// Matched as a WHOLE token, after a trailing `.` is trimmed, so `พ.ศ.` and
 /// `พ.ศ` are one entry.
 ///
-/// **Bare `م` and bare `ه` are absent, and that is a gap, not a nicety**:
-/// `٢٠٢٣م` is an ordinary way to write a Gregorian year in Arabic and it is not
-/// read here. They abbreviate ميلادي and هجري — and they are also a metre, a
-/// list letter, and two of the commonest letters in the language. `١٥٠٠ م` is
-/// fifteen hundred METRES, a running event, and admitting the marker would file
-/// it as the year 1500. The tatweel form `هـ` is unambiguous, the tatweel being
-/// what marks it as an abbreviation, and carries the common Hijri case instead.
+/// Every entry here settles a year on its own. The two that cannot —
+/// bare `م` and bare `ه` — live in [`AMBIGUOUS_ERA_MARKERS`] and are read only
+/// where the sentence confirms them.
 const ERA_MARKERS: &[(&str, Calendar)] = &[
     // Thai: พ.ศ. = พุทธศักราช, Buddhist Era; ค.ศ. = คริสต์ศักราช, Christian Era.
     ("พ.ศ", Calendar::Buddhist),
@@ -604,6 +600,33 @@ const ERA_MARKERS: &[(&str, Calendar)] = &[
     ("明治", Calendar::Meiji),
 ];
 
+/// Era markers that are also ordinary words, admitted only where the sentence
+/// confirms them.
+///
+/// `م` and `ه` abbreviate ميلادي and هجري, and `٢٠٢٣م` is an everyday way to
+/// write a Gregorian year — but `م` is also a **metre** and `ه` a list letter,
+/// so unlike every entry in [`ERA_MARKERS`] the word alone settles nothing.
+/// Which is the point Arabic makes about itself: it reads in context, and the
+/// context is in the sentence. A YEAR NOUN governing the number is that context
+/// — سنة, عام and the rest of `AR_UNITS`' [`Unit::Year`] vocabulary, article and
+/// all — and `سنة ٢٠٢٣م` is then as unambiguous as `٢٠٢٣ ميلادي`.
+///
+/// Confirming evidence, never a blocklist: the same trade
+/// [`ar_ago_is_temporal`] makes for من, for the same reason. A list of the
+/// words that would rule the reading out fabricates on the first one nobody
+/// thought of; an allowlist fails by staying quiet, and a mention not recorded
+/// is a gap where an invented date is a lie.
+///
+/// **Attachment was tried first and is not enough.** `٢٠٢٣م` is written glued
+/// and `١٥٠٠ م` spaced, so the writer's own orthography looks like the
+/// discriminator, and SI even asks for that space. Real Arabic does not always
+/// give it: `على ارتفاع ٢٥٠٠م` — an altitude — is glued and ordinary, and a
+/// rule reading it as the year 2500 is exactly the fabrication this module
+/// exists to prevent. So the gap that remains is the bare `١٩٩٥م` with no year
+/// noun anywhere near it, which stays unread.
+const AMBIGUOUS_ERA_MARKERS: &[(&str, Calendar)] =
+    &[("م", Calendar::Gregorian), ("ه", Calendar::Hijri)];
+
 /// The word CJK writes after a year, absorbed into the recorded span so that
 /// `令和6年` comes back whole. It names no era by itself and sets no calendar.
 const CJK_YEAR: &str = "年";
@@ -615,6 +638,29 @@ fn era_of(tok: &str) -> Option<Calendar> {
         .iter()
         .find(|(name, _)| *name == t)
         .map(|(_, c)| *c)
+}
+
+/// The calendar an [ambiguous][`AMBIGUOUS_ERA_MARKERS`] marker would name, said
+/// without deciding whether it is one — the caller supplies the confirmation.
+fn ambiguous_era_of(tok: &str) -> Option<Calendar> {
+    let t = tok.trim_end_matches('.');
+    AMBIGUOUS_ERA_MARKERS
+        .iter()
+        .find(|(name, _)| *name == t)
+        .map(|(_, c)| *c)
+}
+
+/// Whether a noun meaning "year" governs the number at `i`, which is the
+/// sentence stating that this number counts years — سنة ٢٠٢٣, العام ١٩٩٥.
+///
+/// Reuses `AR_UNITS` rather than repeating its vocabulary: [`ar_unit`] already
+/// strips the definite article and already knows every spelling and plural the
+/// relative arms match.
+fn a_year_noun_governs(toks: &[(usize, String)], i: usize) -> bool {
+    i.checked_sub(1)
+        .and_then(|k| toks.get(k))
+        .and_then(|(_, w)| ar_unit(w))
+        == Some(Unit::Year)
 }
 
 /// An era marker standing beside the single-token date or year at `i`.
@@ -633,7 +679,10 @@ fn era_beside(toks: &[(usize, String)], i: usize) -> Option<(Calendar, usize, us
         .and_then(|k| toks.get(k))
         .and_then(|(o, w)| era_of(w).map(|c| (c, *o)));
     let after = toks.get(i + 1);
-    let after_era = after.and_then(|(_, w)| era_of(w));
+    let after_era = after.and_then(|(_, w)| {
+        // A marker that is also an ordinary word needs the sentence behind it.
+        era_of(w).or_else(|| ambiguous_era_of(w).filter(|_| a_year_noun_governs(toks, i)))
+    });
     let cal = match (before.map(|(c, _)| c), after_era) {
         (Some(a), Some(b)) if a != b => return None,
         (Some(c), _) | (None, Some(c)) => c,
@@ -3596,18 +3645,44 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_arabic_letter_never_names_an_era() {
-        // م abbreviates ميلادي and also means METRES. ١٥٠٠ م is a running
-        // event; filing it as the year 1500 is the fabrication this module
-        // exists to prevent, so the bare letters are not markers.
-        for text in ["جريت ١٥٠٠ م", "المسافة ٢٠٢٣ م", "الملف ١٤٤٧ ه"]
-        {
+    fn a_bare_arabic_letter_needs_the_sentence_to_confirm_it() {
+        // م abbreviates ميلادي and also means METRES; ه abbreviates هجري and
+        // is also a list letter. Neither settles anything alone — and note
+        // ارتفاع ٢٥٠٠م is GLUED, which is why attachment cannot be the
+        // discriminator: an altitude written exactly like a year.
+        for text in [
+            "جريت ١٥٠٠ م",
+            "على ارتفاع ٢٥٠٠م",
+            "المسافة ٢٠٢٣ م",
+            "الملف ١٤٤٧ ه",
+        ] {
             let m = extract_time_mentions_in(text, None, Locale::ARABIC);
             assert!(m.is_empty(), "{text} invented {m:?}");
         }
-        assert_eq!(era_of("م"), None);
-        assert_eq!(era_of("ه"), None);
-        // The unabbreviated words are unambiguous and do name one.
+        assert_eq!(era_of("م"), None, "not a marker by itself");
+        assert_eq!(era_of("ه"), None, "not a marker by itself");
+
+        // A year noun governing the number is the sentence saying which
+        // reading it means. Arabic supplies that context; this reads it.
+        for (text, want) in [
+            ("ولد سنة ٢٠٢٣م", "2023-01-01"),
+            ("صدر عام ١٩٩٥ م", "1995-01-01"),
+            ("في العام ٢٠٠٠م", "2000-01-01"),
+        ] {
+            let m = extract_time_mentions_in(text, None, Locale::ARABIC);
+            assert_eq!(m.len(), 1, "{text}: {m:?}");
+            assert_eq!(m[0].kind, TimeKind::Absolute, "{text}");
+            assert_eq!(m[0].resolved.as_deref(), Some(want), "{text}");
+        }
+        // The Hijri one converts rather than renumbering.
+        let h = extract_time_mentions_in("سنة ١٤٤٧ ه", None, Locale::ARABIC);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(h[0]
+            .resolved
+            .as_deref()
+            .is_some_and(|r| r.starts_with("2025-")));
+
+        // The unabbreviated words never needed confirming.
         assert_eq!(era_of("ميلادي"), Some(Calendar::Gregorian));
         assert_eq!(era_of("هجري"), Some(Calendar::Hijri));
     }

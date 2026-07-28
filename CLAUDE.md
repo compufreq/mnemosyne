@@ -120,9 +120,15 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   leave the declaration standing. A **bare year** is a mention only where a
   marker names it (`2568` is a quantity, `พ.ศ. 2568` is 2025) — the same trade
   `month_name_is_deliberate` makes, and the only route by which 令和/民國 mean
-  anything since those are written with a year and no month. Bare `م`/`ه` are
-  NOT markers: `م` is also metres and `١٥٠٠ م` is a running event, not the year
-  1500. The era reaches the numeric readers and the bare year only — the
+  anything since those are written with a year and no month.
+  `AMBIGUOUS_ERA_MARKERS` (bare `م`/`ه`) are read only where
+  `a_year_noun_governs` the number — `م` is also METRES and `ه` a list letter,
+  so `سنة ٢٠٢٣م` resolves and `جريت ١٥٠٠ م` does not; confirming evidence, never
+  a blocklist, reusing `AR_UNITS`' `Unit::Year` vocabulary so it inherits every
+  plural and article. **Attachment is NOT the discriminator** — `على ارتفاع
+  ٢٥٠٠م` is an ordinary glued altitude and would read as the year 2500 (pinned
+  as a negative control). The era reaches the numeric readers and the bare year
+  only — the
   month-name arms build Gregorian-only and always have, so a *declared* calendar
   never reached them either (recorded gap, both directions).
   `tokens()` breaks a run where a digit meets a letter from a script that
