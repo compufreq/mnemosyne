@@ -2975,20 +2975,24 @@ fn agglutinative_family(q: &str, tok: &str, lang: MorphLang) -> bool {
 /// floor-8→5 mistake, so it is deliberately confined: two languages, three
 /// endings, and every pair it decides is pinned as a control on one side or the
 /// other. It is not a general permission to lower floors.
-fn derivations_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
+fn derivations_for(lang: MorphLang) -> (&'static [(&'static str, &'static str)], usize) {
     const NONE: &[(&str, &str)] = &[];
     const EN: &[(&str, &str)] = &[("", "ion"), ("", "ation"), ("e", "ion")];
     const FR: &[(&str, &str)] = &[("", "e"), ("", "es")];
     match lang {
-        MorphLang::English => EN,
-        MorphLang::French => FR,
-        _ => NONE,
+        // SIX, not five. `encrypt` is seven and `quest` is five, and at five
+        // `-ion` merged `question`/`quest` — a false pair that shipped in the
+        // first version of this rule and was caught only when the control was
+        // finally written. `champion`/`champ` is lost with it, which is a real
+        // relation and the stated price.
+        MorphLang::English => (EN, 6),
+        // FIVE. `grand` is five and `port` is four, so French cannot use six
+        // without losing the feminine it exists for. Two languages, two floors:
+        // a single constant was the bug.
+        MorphLang::French => (FR, 5),
+        _ => (NONE, 0),
     }
 }
-
-/// Stem length a [`derivations_for`] ending requires. Five, because that is
-/// what separates `encrypt` (7) from `mill` (4) and `grand` (5) from `port` (4).
-const DERIVATION_STEM_FLOOR: usize = 5;
 
 /// The language a word's SCRIPT identifies, where the table for it is written
 /// entirely in that script and so cannot fire anywhere else.
@@ -3080,7 +3084,8 @@ fn inflection_family(q: &str, tok: &str, lang: MorphLang) -> bool {
             })
         })
     };
-    if meets(derivations_for(lang), DERIVATION_STEM_FLOOR) {
+    let (derivations, floor) = derivations_for(lang);
+    if !derivations.is_empty() && meets(derivations, floor) {
         return true;
     }
     inflections_for(lang).iter().any(|(a, b)| {
@@ -7174,6 +7179,73 @@ mod tests {
                 ("corn", "corner", Verdict::Apart, "-er hazard"),
                 ("butt", "butter", Verdict::Apart, "-er hazard"),
                 ("cow", "cower", Verdict::Apart, "-er hazard"),
+                // What the `-ion` derivation decides. `encrypt` is seven
+                // characters and `mill` is four; DERIVATION_STEM_FLOOR is the
+                // whole discriminator, so both sides are pinned.
+                ("mill", "million", Verdict::Apart, "-ion length gate"),
+                (
+                    "question",
+                    "quest",
+                    Verdict::Apart,
+                    "-ion at exactly the floor",
+                ),
+                ("opt", "option", Verdict::Apart, "-ion length gate"),
+                // Hazards a UNION of the Latin tables would create, pinned
+                // before any such union is attempted. Italian `a`→`e` is its
+                // feminine plural and reaches `data`/`date`; Turkish stacks
+                // `-ler` on anything; Spanish and French verb endings sit on
+                // ordinary English nouns.
+                ("data", "date", Verdict::Apart, "Italian a->e on English"),
+                ("media", "medie", Verdict::Apart, "Italian a->e on English"),
+                ("hand", "handler", Verdict::Apart, "Turkish -ler on English"),
+                ("cost", "coster", Verdict::Apart, "agent-noun hazard"),
+            ],
+        },
+        Controls {
+            // The SAME English hazards, with nothing declared. The declared set
+            // above cannot see a rule that only fires when `MorphLang` is
+            // `Undeclared`, and an untested condition is an untested rule —
+            // this is the third time that has bitten in this file.
+            language: "english (undeclared)",
+            lang: MorphLang::Undeclared,
+            filler: &[
+                "the kitchen tap dripped all evening and kept me awake",
+                "we walked beside the river until the light faded away",
+                "she bought bread cheese and two bottles of red wine",
+                "the train from the airport was delayed by a whole hour",
+                "my neighbour repainted his fence a bright shade of green",
+                "they argued about the bill and then split it evenly",
+                "a grey cat slept on the warm bonnet of the van",
+            ],
+            pairs: &[
+                ("data", "date", Verdict::Apart, "Italian a->e on English"),
+                ("media", "medie", Verdict::Apart, "Italian a->e on English"),
+                ("hand", "handler", Verdict::Apart, "Turkish -ler on English"),
+                ("flow", "flower", Verdict::Apart, "German -er on English"),
+                ("corn", "corner", Verdict::Apart, "German -er on English"),
+                (
+                    "other",
+                    "mother",
+                    Verdict::Apart,
+                    "the floor 8-to-5 casualty",
+                ),
+                ("university", "universe", Verdict::Apart, "Porter over-stem"),
+                // Romance verb endings land on ordinary English nouns:
+                // `-er`/`-e` and `-er`/`-en` are Spanish, French and Portuguese
+                // conjugation, and English has words on both sides.
+                ("cover", "cove", Verdict::Apart, "Romance -er/-e on English"),
+                (
+                    "cover",
+                    "coven",
+                    Verdict::Apart,
+                    "Romance -er/-en on English",
+                ),
+                (
+                    "question",
+                    "quest",
+                    Verdict::Apart,
+                    "-ion at exactly the floor",
+                ),
             ],
         },
         Controls {
