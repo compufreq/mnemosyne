@@ -6105,6 +6105,253 @@ mod tests {
         assert!(!greek_word_family("internal", "international"));
     }
 
+    /// Words that look related and are not — the half of the evidence the
+    /// morphology work has never had.
+    ///
+    /// `.handover/LANGUAGE_COVERAGE_AUDIT.md` states it at line 105: **none of
+    /// its 167 pairs is a negative control.** Every row is a true morphological
+    /// relation, so a rule that admitted every string pair would score 100% on
+    /// it. That is exactly how the containment floor went 8 → 5 on a "3.03 mean
+    /// links, safe" reading and admitted `other`/`mother`. A recall measurement
+    /// cannot justify a precision decision; this is the missing half, and every
+    /// rule that ADMITS has to come through here first.
+    ///
+    /// Measured end to end through the real [`PalaceStore::search`] at
+    /// **realistic drawer length**. At one sentence the cosine alone clears
+    /// `SEMANTIC_ADMISSION_GATE` and masks whatever the lexical channels do —
+    /// measured, 62.5% of Greek's supposedly-unreachable rows were admitted by
+    /// the embedder at short frame length, so a short-drawer control proves
+    /// nothing about a lexical rule.
+    ///
+    /// Only the LEXICAL channels are asserted. A semantic-only hit is the
+    /// embedder's opinion rather than a rule's, and pinning it would turn this
+    /// into a test of `HashEmbedder`'s hashing.
+    ///
+    /// **It fails in both directions.** [`Verdict::Apart`] pairs must not gain
+    /// a lexical channel. [`Verdict::Cost`] pairs already admit and are pinned
+    /// as the known price — if one stops admitting, that is *good news* and
+    /// this test reports it instead of staying quiet, exactly as
+    /// `a_sealed_vault_exposes_metadata_but_never_content` does for metadata.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Verdict {
+        /// Must not meet on any lexical channel.
+        Apart,
+        /// Already meets. A recorded, deliberate cost — not an accident.
+        Cost,
+    }
+
+    struct Controls {
+        language: &'static str,
+        /// Padding to reach realistic length. Asserted disjoint from every
+        /// control word: the first version of this study reported the decisive
+        /// Greek pair as already-related because the filler literally contained
+        /// the query, so the measurement was of the padding.
+        filler: &'static [&'static str],
+        pairs: &'static [(&'static str, &'static str, Verdict, &'static str)],
+    }
+
+    const CONTROL_SETS: &[Controls] = &[
+        Controls {
+            language: "english",
+            filler: &[
+                "the kitchen tap dripped all evening and kept me awake",
+                "we walked beside the river until the light faded away",
+                "she bought bread cheese and two bottles of red wine",
+                "the train from the airport was delayed by a whole hour",
+                "my neighbour repainted his fence a bright shade of green",
+                "they argued about the bill and then split it evenly",
+                "a grey cat slept on the warm bonnet of the van",
+            ],
+            pairs: &[
+                ("other", "mother", Verdict::Apart, "the floor 8→5 casualty"),
+                (
+                    "count",
+                    "accounting",
+                    Verdict::Apart,
+                    "the floor 8→5 casualty",
+                ),
+                ("press", "depression", Verdict::Apart, "audit false friend"),
+                ("university", "universe", Verdict::Apart, "Porter over-stem"),
+                ("organization", "organ", Verdict::Apart, "Porter over-stem"),
+                (
+                    "experiment",
+                    "experience",
+                    Verdict::Apart,
+                    "Porter over-stem",
+                ),
+                ("police", "policy", Verdict::Apart, "Porter over-stem"),
+                (
+                    "conversation",
+                    "conversion",
+                    Verdict::Apart,
+                    "same_word_family cost",
+                ),
+                (
+                    "internal",
+                    "international",
+                    Verdict::Apart,
+                    "same_word_family cost",
+                ),
+                (
+                    "processor",
+                    "procession",
+                    Verdict::Apart,
+                    "same_word_family cost",
+                ),
+            ],
+        },
+        Controls {
+            language: "german",
+            filler: &[
+                "der wasserhahn tropfte den ganzen abend und hielt mich wach",
+                "wir gingen am fluss entlang bis das licht verschwand",
+                "sie kaufte brot käse und zwei flaschen wein für heute",
+                "der zug vom flughafen hatte eine ganze stunde verspätung",
+                "mein nachbar strich seinen zaun in einem hellen grün",
+                "sie stritten über die rechnung und teilten sie dann",
+                "eine graue katze schlief auf der warmen motorhaube",
+            ],
+            pairs: &[
+                ("reise", "reis", Verdict::Apart, "journey / rice"),
+                ("stadt", "staat", Verdict::Apart, "city / state"),
+                ("malen", "mahlen", Verdict::Apart, "to paint / to grind"),
+                ("meer", "mehr", Verdict::Apart, "sea / more"),
+            ],
+        },
+        Controls {
+            language: "arabic",
+            filler: &[
+                "تسرب الماء من الحنفية طوال المساء ولم أنم",
+                "مشينا بجانب النهر حتى غاب الضوء تماما",
+                "اشترت الخبز والجبن وزجاجتين من العصير",
+                "تأخرت الرحلة من المبنى ساعة كاملة اليوم",
+                "دهن جاري سياجه بلون أخضر فاتح جدا",
+                "تجادلوا حول الفاتورة ثم اقتسموها بينهم",
+            ],
+            pairs: &[
+                // All three already meet on the skeleton rule, which strips
+                // the weak letters ا و ي: سيارة and أسرة both reduce to سرة,
+                // كريم and كرم to كرم, قطار and قطر to قطر. Measured here for
+                // the first time — the audit named them and never ran them.
+                (
+                    "سيارة",
+                    "أسرة",
+                    Verdict::Cost,
+                    "car / family — shared skeleton سرة",
+                ),
+                (
+                    "كريم",
+                    "كرم",
+                    Verdict::Cost,
+                    "generous / vine — shared skeleton كرم",
+                ),
+                (
+                    "قطار",
+                    "قطر",
+                    Verdict::Cost,
+                    "train / diameter — shared skeleton قطر",
+                ),
+            ],
+        },
+        Controls {
+            language: "greek",
+            filler: &[
+                "Η βρύση έσταζε όλο το βράδυ και δεν με άφησε",
+                "Περπατήσαμε δίπλα στο ποτάμι μέχρι να σβήσει το φως",
+                "Αγόρασε ψωμί τυρί και δύο μπουκάλια κρασί",
+                "Το τρένο από το αεροδρόμιο άργησε μία ώρα",
+                "Ο γείτονας έβαψε τον φράχτη του ανοιχτό πράσινο",
+                "Μάλωσαν για τον λογαριασμό και τον μοίρασαν στα δύο",
+            ],
+            pairs: &[
+                // The pair `lib.rs` records as having killed Snowball Greek.
+                // A pairwise rule keeps them apart where a stemmer cannot:
+                // they share three characters, not seven.
+                (
+                    "πολύ",
+                    "πόλη",
+                    Verdict::Apart,
+                    "much / city — Snowball Greek's killer",
+                ),
+                ("κατάσταση", "κατάστημα", Verdict::Apart, "situation / shop"),
+                (
+                    "παράδειγμα",
+                    "παράδεισος",
+                    Verdict::Cost,
+                    "example / paradise — greek_word_family's named price",
+                ),
+            ],
+        },
+    ];
+
+    #[test]
+    fn false_friends_stay_apart() {
+        use mnemosyne_core::normalize::search_key;
+        let mut report: Vec<String> = Vec::new();
+
+        for set in CONTROL_SETS {
+            // Prove the padding says nothing about any control word first. The
+            // measurement is worthless otherwise, and it fails silently and
+            // flatteringly: a query found in its own padding reads as EXACT.
+            let padding = search_key(&set.filler.join(" ")).to_string();
+            for (a, b, _, _) in set.pairs {
+                for w in [a, b] {
+                    assert!(
+                        !padding.contains(&*search_key(w)),
+                        "{}: filler contains the control word {w:?} — the drawer \
+                         would be measured against its own padding",
+                        set.language
+                    );
+                }
+            }
+            let words = set
+                .filler
+                .iter()
+                .map(|s| s.split_whitespace().count())
+                .sum::<usize>();
+            assert!(
+                words >= 40,
+                "{}: padding is only {words} words — too short to stop the \
+                 cosine masking the lexical channels",
+                set.language
+            );
+
+            for (query, other, want, why) in set.pairs {
+                let (_d, mut s) = store(SecurityLevel::Sealed);
+                // The false friend, buried in ordinary prose of realistic length.
+                let content = format!("{} {}", other, set.filler.join(" "));
+                s.upsert(&drawer("w", "r", &content, 0)).unwrap();
+                for (i, f) in set.filler.iter().enumerate() {
+                    s.upsert(&drawer("w", "r", f, i as u32 + 1)).unwrap();
+                }
+                let hits = s.search(query, &SearchOptions::default()).unwrap();
+                let lexical = hits
+                    .iter()
+                    .find(|h| h.drawer.content == content)
+                    .map(|h| (h.lexical_exact, h.lexical_morph))
+                    .unwrap_or((0.0, 0.0));
+                let met = lexical.0 > 0.0 || lexical.1 > 0.0;
+                let got = if met { Verdict::Cost } else { Verdict::Apart };
+                if got != *want {
+                    report.push(format!(
+                        "  {}: {query} / {other} ({why}) — wanted {want:?}, got {got:?} \
+                         (exact {:.3}, morph {:.3})",
+                        set.language, lexical.0, lexical.1
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            report.is_empty(),
+            "false-friend controls moved. A pair that gained a lexical channel \
+             is a NEW over-admission and the rule that did it must be narrowed. \
+             A pair that LOST one is good news — update the verdict here so the \
+             improvement is recorded rather than silently absorbed.\n{}",
+            report.join("\n")
+        );
+    }
+
     // ---- TEMPORARY promiscuity measurement, delete after reading ----------
     //
     // How much of a REAL vocabulary does one query link to under each

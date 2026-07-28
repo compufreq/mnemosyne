@@ -391,7 +391,17 @@ Heavy cargo work: use the `mnemosyne-target` volume + `CARGO_TARGET_DIR=/build`
   links to) counts reach and is blind to correctness; used to justify lowering
   the delimiting floor 8→5 it admitted `other`/`mother` and
   `count`/`accounting`. Any rule feeding a channel that ADMITS needs negative
-  controls, not just a link count.
+  controls, not just a link count. **The controls now exist**:
+  `false_friends_stay_apart` (store lib.rs) runs 20 known false friends across
+  en/de/ar/el end-to-end through `search` at realistic drawer length, asserting
+  only the LEXICAL channels (a sem-only hit is the embedder's opinion, not a
+  rule's) and failing in BOTH directions — `Verdict::Apart` must not gain a
+  channel, `Verdict::Cost` is a pinned known price whose disappearance is good
+  news that must be recorded rather than absorbed. Padding is asserted disjoint
+  from every control word: the first run of this instrument reported the
+  decisive Greek pair as already-related because the filler literally contained
+  the query, so it measured the padding — flatteringly, and in the one place
+  it mattered most.
 - Cross-vault access must fail cryptographically (AAD binds vault id), not
   just logically.
 - Vault/wing/room names go through `mnemosyne_core::validate_name` (path

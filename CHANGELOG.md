@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — morphology gets the other half of its evidence
+
+- **Negative controls, at last.** The 167-pair morphology audit that drove the
+  comparison layer contains **no false friends** — every row in it is a true
+  relation, so a rule admitting every string pair would score 100% on it. That
+  is precisely how the containment floor went 8 → 5 on a "safe" reading and
+  admitted `other`/`mother`. `false_friends_stay_apart` closes the gap: 20 known
+  false friends across English, German, Arabic and Greek, measured end to end
+  through the real `search` at realistic drawer length, asserting only the
+  **lexical** channels — a semantic-only hit is the embedder's opinion, not a
+  rule's, and pinning it would make this a test of `HashEmbedder`.
+  - It **fails in both directions**. A pair that gains a lexical channel is a
+    new over-admission; a pair that loses one is good news the test refuses to
+    absorb silently.
+  - Verified load-bearing: de-scoping `greek_word_family` to all scripts makes
+    `university`/`universe`, `conversation`/`conversion`,
+    `internal`/`international` and `processor`/`procession` admit on
+    `lexical_morph` at 0.309, and the test names each one.
+  - **Three Arabic false friends already admit** and are pinned as such:
+    `سيارة`/`أسرة`, `كريم`/`كرم`, `قطار`/`قطر` all share a consonantal skeleton
+    once the weak letters ا و ي are stripped. The audit named them and never ran
+    them; this is the first measurement of the shipped rule's price.
+  - Padding is asserted disjoint from every control word. The first run of this
+    instrument reported `πολύ`/`πόλη` — the pair `lib.rs` records as having
+    killed Snowball Greek — as *already related*, because the filler literally
+    contained `πολύ` and the query matched its own padding. A contaminated
+    control fails flatteringly, which is the dangerous direction.
+
 ## Unreleased — the comparison layer, and dates that are declared rather than guessed
 
 - **An era the writer typed outranks the calendar the caller declared.** `พ.ศ.`,
