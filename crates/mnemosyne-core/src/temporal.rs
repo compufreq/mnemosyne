@@ -600,32 +600,57 @@ const ERA_MARKERS: &[(&str, Calendar)] = &[
     ("明治", Calendar::Meiji),
 ];
 
-/// Era markers that are also ordinary words, admitted only where the sentence
-/// confirms them.
+/// Era markers that are also ordinary words, read where the writing confirms
+/// them.
 ///
 /// `م` and `ه` abbreviate ميلادي and هجري, and `٢٠٢٣م` is an everyday way to
 /// write a Gregorian year — but `م` is also a **metre** and `ه` a list letter,
 /// so unlike every entry in [`ERA_MARKERS`] the word alone settles nothing.
 /// Which is the point Arabic makes about itself: it reads in context, and the
-/// context is in the sentence. A YEAR NOUN governing the number is that context
-/// — سنة, عام and the rest of `AR_UNITS`' [`Unit::Year`] vocabulary, article and
-/// all — and `سنة ٢٠٢٣م` is then as unambiguous as `٢٠٢٣ ميلادي`.
+/// context is on the page. Two signals, strongest first — the shape
+/// [`DateOrder`] already uses:
 ///
-/// Confirming evidence, never a blocklist: the same trade
-/// [`ar_ago_is_temporal`] makes for من, for the same reason. A list of the
-/// words that would rule the reading out fabricates on the first one nobody
-/// thought of; an allowlist fails by staying quiet, and a mention not recorded
-/// is a gap where an invented date is a lie.
+/// 1. **a year noun governs the number.** سنة ٢٠٢٣م, عام ١٩٩٥ م, في العام
+///    ٢٠٠٠م — the sentence states which reading it means, spaced or glued. The
+///    vocabulary is `AR_UNITS`' own [`Unit::Year`] set through [`ar_unit`],
+///    article and plurals included. Confirming evidence, never a blocklist:
+///    the trade [`ar_ago_is_temporal`] makes for من, for the reason it records
+///    — a list of the words that would rule the reading out fabricates on the
+///    first one nobody thought of.
+/// 2. **the marker is glued to the year**, no separator at all
+///    ([`glued_to_what_precedes`]). `٢٠٢٣م` is how Arabic writes a year;
+///    `١٥٠٠ م` is how it writes a quantity, and SI asks for that space. The
+///    absence of it is the writer's own orthography, so it is read — as a
+///    **default**, which in this module means the answer where nothing stronger
+///    was written, never a certainty.
 ///
-/// **Attachment was tried first and is not enough.** `٢٠٢٣م` is written glued
-/// and `١٥٠٠ م` spaced, so the writer's own orthography looks like the
-/// discriminator, and SI even asks for that space. Real Arabic does not always
-/// give it: `على ارتفاع ٢٥٠٠م` — an altitude — is glued and ordinary, and a
-/// rule reading it as the year 2500 is exactly the fabrication this module
-/// exists to prevent. So the gap that remains is the bare `١٩٩٥م` with no year
-/// noun anywhere near it, which stays unread.
+/// A spaced marker with no year noun stays unread.
+///
+/// **The cost of signal 2 is real, and pinned by test.** Arabic geography
+/// writes `على ارتفاع ٢٥٠٠م` — an altitude — glued, and that now reads as the
+/// year 2500. The collision is confined to four-digit quantities written
+/// without their space: `٥٠٠م` is out of reach already, since the Gregorian
+/// gate wants four digits. Taken deliberately, and the trade is the one
+/// `DateOrder`'s last step takes — a wrong year is visible in the record and
+/// correctable, where the alternative left the commonest written form of a
+/// Gregorian year in Arabic unreadable.
 const AMBIGUOUS_ERA_MARKERS: &[(&str, Calendar)] =
     &[("م", Calendar::Gregorian), ("ه", Calendar::Hijri)];
+
+/// Whether the token beginning at byte offset `off` is glued to what precedes
+/// it — no separator whatever between them in the text as written.
+///
+/// Read from the RAW text rather than from token arithmetic: tokens are
+/// lowercased, and NFC-folded again in the Arabic scanner, so `off + w.len()`
+/// is not reliably where the previous token ended. The character immediately
+/// before is, and it needs no lengths at all.
+///
+/// A lone `م` can only be glued to digits, because [`push_run`] breaks a run
+/// exactly there — between a digit and a letter of an attaching script — and
+/// nowhere else inside a word.
+fn glued_to_what_precedes(text: &str, off: usize) -> bool {
+    text[..off].chars().next_back().is_some_and(is_token_char)
+}
 
 /// The word CJK writes after a year, absorbed into the recorded span so that
 /// `令和6年` comes back whole. It names no era by itself and sets no calendar.
@@ -673,15 +698,19 @@ fn a_year_noun_governs(toks: &[(usize, String)], i: usize) -> bool {
 /// calendar standing. A drawer holding `ค.ศ. 2023 พ.ศ.` was written by someone
 /// inconsistent or is quoting two sources, and picking a winner is exactly what
 /// [`order_demonstrated_by`] already declines to do for field order.
-fn era_beside(toks: &[(usize, String)], i: usize) -> Option<(Calendar, usize, usize)> {
+fn era_beside(text: &str, toks: &[(usize, String)], i: usize) -> Option<(Calendar, usize, usize)> {
     let before = i
         .checked_sub(1)
         .and_then(|k| toks.get(k))
         .and_then(|(o, w)| era_of(w).map(|c| (c, *o)));
     let after = toks.get(i + 1);
-    let after_era = after.and_then(|(_, w)| {
-        // A marker that is also an ordinary word needs the sentence behind it.
-        era_of(w).or_else(|| ambiguous_era_of(w).filter(|_| a_year_noun_governs(toks, i)))
+    let after_era = after.and_then(|(o, w)| {
+        // A marker that is also an ordinary word needs the writing behind it:
+        // the sentence naming a year, or the writer withholding the space.
+        era_of(w).or_else(|| {
+            ambiguous_era_of(w)
+                .filter(|_| a_year_noun_governs(toks, i) || glued_to_what_precedes(text, *o))
+        })
     });
     let cal = match (before.map(|(c, _)| c), after_era) {
         (Some(a), Some(b)) if a != b => return None,
@@ -1643,6 +1672,7 @@ struct NumericDate {
 }
 
 fn numeric_or_era(
+    text: &str,
     toks: &[(usize, String)],
     i: usize,
     month: impl Fn(&str) -> Option<Month>,
@@ -1650,7 +1680,7 @@ fn numeric_or_era(
     order: DateOrder,
 ) -> Option<NumericDate> {
     let w = toks[i].1.as_str();
-    let era = era_beside(toks, i);
+    let era = era_beside(text, toks, i);
     let cal = era.map_or(loc.calendar, |(c, _, _)| c);
     let period = if let Some(d) = named_date_token(w, month, cal) {
         d.map(point)
@@ -1763,7 +1793,7 @@ fn scan_arabic(text: &str, anchor: Option<Date>, loc: Locale) -> Vec<TimeMention
 
         // Language-neutral numeric forms first — a date written 2023-05-07 is
         // the same date in any prose around it, and so is ١٤٤٧هـ.
-        if let Some(d) = numeric_or_era(&toks, i, ar_month, loc, order) {
+        if let Some(d) = numeric_or_era(text, &toks, i, ar_month, loc, order) {
             off = d.start;
             consumed = d.extra;
             mention = Some((TimeKind::Absolute, d.period));
@@ -1943,7 +1973,7 @@ fn scan_english(text: &str, anchor: Option<Date>, loc: Locale) -> Vec<TimeMentio
         // resolvable", which stays distinct from "resolved to one day".
         let mut mention: Option<(TimeKind, Option<(Date, Date)>)> = None;
 
-        if let Some(d) = numeric_or_era(&toks, i, month_of, loc, order) {
+        if let Some(d) = numeric_or_era(text, &toks, i, month_of, loc, order) {
             off = d.start;
             consumed = d.extra;
             mention = Some((TimeKind::Absolute, d.period));
@@ -3646,34 +3676,52 @@ mod tests {
 
     #[test]
     fn a_bare_arabic_letter_needs_the_sentence_to_confirm_it() {
-        // م abbreviates ميلادي and also means METRES; ه abbreviates هجري and
-        // is also a list letter. Neither settles anything alone — and note
-        // ارتفاع ٢٥٠٠م is GLUED, which is why attachment cannot be the
-        // discriminator: an altitude written exactly like a year.
-        for text in [
-            "جريت ١٥٠٠ م",
-            "على ارتفاع ٢٥٠٠م",
-            "المسافة ٢٠٢٣ م",
-            "الملف ١٤٤٧ ه",
-        ] {
+        // م abbreviates ميلادي and also means METRES; ه abbreviates هجري and is
+        // also a list letter. Spaced, with no year noun, neither settles
+        // anything — the space is how Arabic writes a quantity.
+        for text in ["جريت ١٥٠٠ م", "المسافة ٢٠٢٣ م", "الملف ١٤٤٧ ه"]
+        {
             let m = extract_time_mentions_in(text, None, Locale::ARABIC);
             assert!(m.is_empty(), "{text} invented {m:?}");
         }
         assert_eq!(era_of("م"), None, "not a marker by itself");
         assert_eq!(era_of("ه"), None, "not a marker by itself");
 
-        // A year noun governing the number is the sentence saying which
-        // reading it means. Arabic supplies that context; this reads it.
-        for (text, want) in [
-            ("ولد سنة ٢٠٢٣م", "2023-01-01"),
-            ("صدر عام ١٩٩٥ م", "1995-01-01"),
-            ("في العام ٢٠٠٠م", "2000-01-01"),
+        // Signal 1 — a year noun governing the number, spaced or glued. The
+        // phrase names a YEAR, so the mention is the whole year: ولد سنة ٢٠٢٣م
+        // is "born in 2023", not "born on 1 January 2023", and the pair has to
+        // say so or the record answers a question nobody asked.
+        for (text, first, last) in [
+            ("ولد سنة ٢٠٢٣م", "2023-01-01", "2023-12-31"),
+            ("صدر عام ١٩٩٥ م", "1995-01-01", "1995-12-31"),
+            ("في العام ٢٠٠٠م", "2000-01-01", "2000-12-31"),
         ] {
             let m = extract_time_mentions_in(text, None, Locale::ARABIC);
             assert_eq!(m.len(), 1, "{text}: {m:?}");
             assert_eq!(m[0].kind, TimeKind::Absolute, "{text}");
-            assert_eq!(m[0].resolved.as_deref(), Some(want), "{text}");
+            assert_eq!(m[0].resolved.as_deref(), Some(first), "{text}");
+            assert_eq!(m[0].resolved_end.as_deref(), Some(last), "{text} is a year");
         }
+        // Signal 2 — the writer withheld the space, which is how Arabic writes
+        // a year and not how it writes a quantity. No year noun anywhere.
+        let glued = extract_time_mentions_in("ولد ١٩٩٥م وتوفي بعدها", None, Locale::ARABIC);
+        assert_eq!(glued.len(), 1, "{glued:?}");
+        assert_eq!(glued[0].text, "١٩٩٥م");
+        assert_eq!(glued[0].resolved.as_deref(), Some("1995-01-01"));
+        assert_eq!(glued[0].resolved_end.as_deref(), Some("1995-12-31"));
+
+        // THE COST OF SIGNAL 2, pinned so it stays visible. Arabic geography
+        // writes an altitude glued, exactly as it writes a year, and no string
+        // relation separates them — reading the number's size would be the
+        // inference this module refuses. A wrong year is in the record and
+        // correctable; the alternative left ١٩٩٥م unreadable.
+        let altitude = extract_time_mentions_in("على ارتفاع ٢٥٠٠م", None, Locale::ARABIC);
+        assert_eq!(altitude.len(), 1, "the cost is taken, not dodged");
+        assert_eq!(altitude[0].resolved.as_deref(), Some("2500-01-01"));
+        // Its bound: the Gregorian gate wants four digits, so ordinary
+        // measurements stay out of reach entirely.
+        assert!(extract_time_mentions_in("على ارتفاع ٥٠٠م", None, Locale::ARABIC).is_empty());
+
         // The Hijri one converts rather than renumbering.
         let h = extract_time_mentions_in("سنة ١٤٤٧ ه", None, Locale::ARABIC);
         assert_eq!(h.len(), 1, "{h:?}");
@@ -3692,15 +3740,16 @@ mod tests {
         // Written by someone inconsistent, or quoting two sources. Picking a
         // winner is what `order_demonstrated_by` already declines to do, so
         // the declared calendar is left standing.
-        let toks = tokens("ค.ศ. 2023 พ.ศ.");
-        assert_eq!(era_beside(&toks, 1), None, "{toks:?}");
+        let both = "ค.ศ. 2023 พ.ศ.";
+        let toks = tokens(both);
+        assert_eq!(era_beside(both, &toks, 1), None, "{toks:?}");
         // Standing alone, each still speaks.
         assert_eq!(
-            era_beside(&tokens("ค.ศ. 2023"), 1).map(|(c, _, _)| c),
+            era_beside("ค.ศ. 2023", &tokens("ค.ศ. 2023"), 1).map(|(c, _, _)| c),
             Some(Calendar::Gregorian)
         );
         assert_eq!(
-            era_beside(&tokens("2023 พ.ศ."), 0).map(|(c, _, _)| c),
+            era_beside("2023 พ.ศ.", &tokens("2023 พ.ศ."), 0).map(|(c, _, _)| c),
             Some(Calendar::Buddhist)
         );
     }

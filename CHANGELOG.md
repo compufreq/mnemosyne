@@ -37,22 +37,28 @@
     `taisho`, `meiji` on `/v1/search` and `mnemosyne_search`.
   - **A marker that is also an ordinary word is read in context, because
     Arabic is.** Bare `م` and `ه` abbreviate ميلادي and هجري — and `م` is also
-    *metres*, `ه` a list letter — so the word alone settles nothing. A **year
-    noun governing the number** is the sentence saying which reading it means:
-    `سنة ٢٠٢٣م`, `عام ١٩٩٥ م` and `في العام ٢٠٠٠م` resolve, while `جريت ١٥٠٠ م`
-    and `على ارتفاع ٢٥٠٠م` name no date. Confirming evidence, never a blocklist,
-    which is the trade the `من` guard already makes and for the same reason;
-    the vocabulary is `AR_UNITS`' own `Unit::Year` set, so it inherits every
-    spelling, plural and article the relative arms already match. **Attachment
-    was tried first and rejected**: `٢٠٢٣م` is glued and `١٥٠٠ م` spaced, so the
-    orthography looks like the discriminator — but `على ارتفاع ٢٥٠٠م` is an
-    ordinary glued altitude, and reading it as the year 2500 is precisely the
-    fabrication this module exists to prevent.
-  - **Three gaps, stated rather than glossed.** A bare `١٩٩٥م` with no year noun
-    near it stays unread — the deliberate price of the rule above. The
-    month-name arms in both scanners build Gregorian-only and always have, so a
-    *declared* calendar never reached them either. CJK numeric dates
-    (`2023年5月7日`) are still unparsed.
+    *metres*, `ه` a list letter — so the word alone settles nothing. Two signals
+    confirm it, strongest first, the shape `DateOrder` already uses. **A year
+    noun governing the number**: `سنة ٢٠٢٣م`, `عام ١٩٩٥ م`, `في العام ٢٠٠٠م`,
+    spaced or glued. The vocabulary is `AR_UNITS`' own `Unit::Year` set through
+    `ar_unit`, so it inherits every spelling, plural and article the relative
+    arms already match — confirming evidence, never a blocklist, which is the
+    trade the `من` guard makes and for the reason it records. Failing that,
+    **the marker glued to the year with no separator at all**: `١٩٩٥م` is how
+    Arabic writes a year, `١٥٠٠ م` with the space is how it writes a quantity,
+    and SI asks for that space. A spaced marker with no year noun stays unread.
+  - **The cost of the glued signal is real and pinned by test.** Arabic
+    geography writes `على ارتفاع ٢٥٠٠م` — an altitude — glued, and it now reads
+    as the year 2500. Nothing in the string separates the two, and reading the
+    number's *size* would be the inference this module refuses. The collision is
+    confined to four-digit quantities written without their space, the Gregorian
+    gate wanting four digits and `٥٠٠م` having three. The same trade day-first
+    takes: a wrong year is in the record and correctable, where silence is
+    neither.
+  - **Two gaps, stated rather than glossed.** The month-name arms in both
+    scanners build Gregorian-only and always have, so a *declared* calendar
+    never reached them either. CJK numeric dates (`2023年5月7日`) are still
+    unparsed.
 - **A date's calendar and field order are DECLARED, never inferred.** `Locale`
   gains `calendar` and `date_order` beside `language` and `week_start`, all
   read-time, so an already-ingested corpus answers correctly the moment a caller

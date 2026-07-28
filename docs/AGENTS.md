@@ -330,19 +330,30 @@ A **bare year** is recorded only where a marker names it: `2568` alone is a
 quantity, `พ.ศ. 2568` is the year 2025. It resolves to the whole year as a
 period (`resolved` + `resolved_end`).
 
-**Bare `م` and `ه` are read only where the sentence confirms them.** They
-abbreviate ميلادي and هجري, but `م` is also *metres* and `ه` a list letter, so
-the word alone settles nothing — which is the point Arabic makes about itself:
-it reads in context. A **year noun governing the number** is that context, so
-`سنة ٢٠٢٣م`, `عام ١٩٩٥ م` and `في العام ٢٠٠٠م` all resolve, while `جريت ١٥٠٠ م`
-and `على ارتفاع ٢٥٠٠م` name no date. Confirming evidence, never a blocklist —
-the same trade the `من` guard makes, and for the same reason. Note attachment is
-*not* the discriminator: an altitude is written glued exactly as a year is.
+**Bare `م` and `ه` are read where the writing confirms them.** They abbreviate
+ميلادي and هجري, but `م` is also *metres* and `ه` a list letter, so the word
+alone settles nothing — which is the point Arabic makes about itself: it reads
+in context, and the context is on the page. Two signals, strongest first:
 
-Three gaps, stated rather than glossed:
+1. **a year noun governs the number** — `سنة ٢٠٢٣م`, `عام ١٩٩٥ م`,
+   `في العام ٢٠٠٠م`. The sentence states the reading, spaced or glued.
+2. **the marker is glued to the year**, no separator at all — `١٩٩٥م`. That is
+   how Arabic writes a year; `١٥٠٠ م` with the space is how it writes a
+   quantity, and SI asks for that space. The default, in the same sense as
+   day-first: the answer where nothing stronger was written.
 
-* **a bare `١٩٩٥م` with no year noun near it stays unread.** That is the price
-  of the rule above, paid deliberately: a gap, where guessing would be a lie.
+A spaced marker with no year noun stays unread — `جريت ١٥٠٠ م` names no date.
+
+**The cost of signal 2 is real and pinned by test.** Arabic geography writes
+`على ارتفاع ٢٥٠٠م` — an altitude — glued, and it now reads as the year 2500.
+Nothing in the string separates the two, and reading the number's *size* would
+be the inference this module refuses. The collision is confined to four-digit
+quantities written without their space, since the Gregorian gate wants four
+digits and `٥٠٠م` has three. Same trade as day-first: a wrong year is in the
+record and correctable, where silence is neither.
+
+Two gaps, stated rather than glossed:
+
 * **month-name arms are Gregorian-only.** `٧ مايو ٢٠٢٣` and `May 2023` build
   their dates without consulting a calendar at all — a *declared* calendar has
   never reached them either — so a marker beside one is not read.
