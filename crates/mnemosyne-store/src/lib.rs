@@ -2994,6 +2994,110 @@ fn derivations_for(lang: MorphLang) -> (&'static [(&'static str, &'static str)],
     }
 }
 
+/// The function words that identify a Latin-script language, and nothing else.
+///
+/// Script settles Greek, Georgian and Hangul; it cannot settle Latin, which is
+/// why `MorphLang` exists. But a DRAWER can settle it — a text carrying `der`,
+/// `die`, `und`, `nicht` is German, and reading that is the same class of act
+/// as reading `พ.ศ.` beside a year. **Evidence, not inference.** Nothing is
+/// derived from the shape of a word; the writer's own commonest words are read.
+///
+/// Chosen for being closed-class and frequent: articles, pronouns,
+/// prepositions, conjunctions and auxiliaries. Content words are deliberately
+/// absent — they travel between languages and a loanword should not vote.
+const LATIN_STOPWORDS: &[(MorphLang, &[&str])] = &[
+    (
+        MorphLang::English,
+        &[
+            "the", "and", "was", "with", "that", "this", "from", "have", "not", "for", "but",
+            "they",
+        ],
+    ),
+    (
+        MorphLang::German,
+        &[
+            "der", "die", "das", "und", "ist", "nicht", "mit", "den", "dem", "ein", "eine", "auch",
+        ],
+    ),
+    (
+        MorphLang::Dutch,
+        &[
+            "het", "een", "van", "is", "niet", "met", "voor", "maar", "zij", "wij", "aan", "ook",
+        ],
+    ),
+    (
+        MorphLang::Italian,
+        &[
+            "il", "lo", "gli", "che", "non", "per", "con", "sono", "questo", "della", "nel", "ma",
+        ],
+    ),
+    (
+        MorphLang::Spanish,
+        &[
+            "el", "los", "las", "que", "por", "con", "una", "para", "pero", "esta", "del", "muy",
+        ],
+    ),
+    (
+        MorphLang::French,
+        &[
+            "le", "les", "des", "une", "est", "pas", "pour", "dans", "avec", "sur", "qui", "mais",
+        ],
+    ),
+    (
+        MorphLang::Portuguese,
+        // The contractions are what make Portuguese identifiable beside
+        // Spanish: `da`, `do`, `ao`, `na`, `no` are preposition+article fused,
+        // where Spanish writes `de la`, `del`, `al`. The shared words (`que`,
+        // `para`, `mas`) are deliberately absent — they vote for both and so
+        // decide nothing.
+        &[
+            "da", "do", "dos", "das", "ao", "aos", "na", "no", "nas", "nos", "uma", "nao",
+        ],
+    ),
+    (
+        MorphLang::Turkish,
+        &[
+            "bir", "bu", "ve", "ile", "icin", "daha", "cok", "ama", "gibi", "olarak", "her", "ne",
+        ],
+    ),
+];
+
+/// The language a drawer's own function words identify, or `Undeclared` when
+/// they do not agree.
+///
+/// **Decisive or nothing.** The winner needs at least three hits and twice the
+/// runner-up, because a single shared word decides nothing — `the` appears in
+/// Dutch text, `is` in English and Dutch alike, `a` everywhere. Where the words
+/// do not agree the drawer says nothing, and saying nothing is the honest
+/// answer that leaves an undeclared corpus exactly as it was.
+///
+/// Consulted ONLY when the caller declared nothing. A declaration is the
+/// caller's deliberate statement about their corpus and outranks what one
+/// drawer's vocabulary suggests — the reverse of the era-marker rule, and for
+/// the reverse reason: an era marker is written beside the very date it
+/// qualifies, while a stray quotation is not a statement about the drawer.
+fn language_of_drawer(tokens: &[String]) -> MorphLang {
+    let (mut best, mut best_n, mut second) = (MorphLang::Undeclared, 0usize, 0usize);
+    for (lang, words) in LATIN_STOPWORDS {
+        let n = tokens
+            .iter()
+            .filter(|t| words.contains(&t.as_str()))
+            .count();
+        if n > best_n {
+            second = best_n;
+            best_n = n;
+            best = *lang;
+        } else if n > second {
+            second = n;
+        }
+    }
+    if best_n >= 3 && best_n >= second * 2 {
+        best
+    } else {
+        MorphLang::Undeclared
+    }
+}
+
 /// The language a word's SCRIPT identifies, where the table for it is written
 /// entirely in that script and so cannot fire anywhere else.
 ///
@@ -3698,6 +3802,14 @@ fn bm25_raw(qterms: &[String], cands: &[Candidate], lang: MorphLang) -> Bm25 {
     let mut tf_morph = vec![vec![0u32; qterms.len()]; n];
     let mut lengths = vec![0f32; n];
     for (i, c) in cands.iter().enumerate() {
+        // What the caller declared, else what THIS drawer's own function words
+        // say it is. Per candidate, because a vault may hold several languages
+        // and the drawer is the unit that has one.
+        let lang = if lang == MorphLang::Undeclared {
+            language_of_drawer(&c.tokens)
+        } else {
+            lang
+        };
         // Content units, not emitted tokens: a segmented run expands into
         // unigrams plus bigrams, and charging that to document length would
         // penalise precisely the drawers segmentation exists to reach.
@@ -7252,7 +7364,7 @@ mod tests {
             // Dutch is not a declared language and never will be by accident:
             // it is here because an UNDECLARED corpus gets `COMMON`, and these
             // two are what `-en` did to it before `-en` became German-only.
-            language: "dutch (undeclared)",
+            language: "dutch (identified from the drawer)",
             lang: MorphLang::Undeclared,
             filler: &[
                 "de kraan in de keuken heeft de hele avond gelekt",
@@ -7266,10 +7378,10 @@ mod tests {
                 (
                     "kop",
                     "kopen",
-                    Verdict::Apart,
-                    "cup / to buy — the -en cost",
+                    Verdict::Cost,
+                    "cup / to buy — the -en price",
                 ),
-                ("man", "manen", Verdict::Apart, "man / manes — the -en cost"),
+                ("man", "manen", Verdict::Cost, "man / manes — the -en price"),
             ],
         },
         Controls {

@@ -2,6 +2,37 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **A corpus that declares nothing now reaches 100% too — the drawer says what
+  language it is.** Undeclared recall goes **62.8% → 100.0%** across all
+  nineteen languages, with zero pairs left to the embedder.
+  - Script settles Greek, Georgian and Hangul; it cannot settle Latin, which is
+    why `MorphLang` exists at all. But the DRAWER can: a text carrying `der`,
+    `die`, `und`, `nicht` is German. `language_of_drawer` reads the function
+    words of the candidate being scored — **evidence, not inference**, the same
+    class of act as reading `พ.ศ.` beside a year. Nothing is derived from the
+    shape of a word; the writer's own commonest words are read.
+  - **Decisive or nothing**: the winner needs three hits and twice the
+    runner-up, because `is` votes for English and Dutch alike. Where the words
+    disagree the drawer says nothing and the corpus is left exactly as it was.
+  - Consulted **only** where the caller declared nothing. A declaration is a
+    deliberate statement about a corpus and outranks one drawer's vocabulary —
+    the reverse of the era-marker precedence, and for the reverse reason: an era
+    marker sits beside the very date it qualifies, a stray quotation does not.
+  - Only closed-class words vote — articles, pronouns, prepositions,
+    auxiliaries. Content words travel between languages and a loanword should
+    not get a vote. Portuguese is identified by its contractions (`da`, `do`,
+    `ao`, `na`) precisely because `que`, `para` and `mas` vote for Spanish too
+    and so decide nothing.
+  - **Two controls flipped from `Apart` to `Cost`, and that is the feature.**
+    Dutch `kop`/`kopen` and `man`/`manen` now merge in an undeclared Dutch
+    drawer, because the drawer identifies as Dutch and `-en` is Dutch's known
+    price. What the engine no longer does is hand Dutch text the English ending
+    set merely because the caller said nothing.
+  - **The blind union was tried first and failed**: all eight Latin tables broke
+    5 controls, the Romance subset broke 2 (`cover`/`cove`, `cover`/`coven`).
+    Applying every table to every Latin word is not the same as knowing which
+    language the text is in.
+
 - **A corpus that declares nothing now gets 86.4% instead of 62.8%.** Five
   languages were silently degrading for callers who never set `language`:
   measured undeclared, Greek 40.8%, Russian 16.7%, Hindi 25.0%, Georgian 33.3%,
