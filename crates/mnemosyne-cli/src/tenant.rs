@@ -130,6 +130,11 @@ fn morph_lang_from(body: &Value) -> mnemosyne_store::MorphLang {
         Some("pt") | Some("portuguese") => mnemosyne_store::MorphLang::Portuguese,
         Some("ru") | Some("russian") => mnemosyne_store::MorphLang::Russian,
         Some("el") | Some("greek") => mnemosyne_store::MorphLang::Greek,
+        Some("nl") | Some("dutch") => mnemosyne_store::MorphLang::Dutch,
+        Some("tr") | Some("turkish") => mnemosyne_store::MorphLang::Turkish,
+        Some("hi") | Some("hindi") => mnemosyne_store::MorphLang::Hindi,
+        Some("ka") | Some("georgian") => mnemosyne_store::MorphLang::Georgian,
+        Some("ko") | Some("korean") => mnemosyne_store::MorphLang::Korean,
         _ => mnemosyne_store::MorphLang::Undeclared,
     }
 }

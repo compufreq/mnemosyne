@@ -2528,6 +2528,11 @@ pub enum MorphLang {
     Portuguese,
     Russian,
     Greek,
+    Dutch,
+    Turkish,
+    Hindi,
+    Georgian,
+    Korean,
 }
 
 /// The inflectional endings a word may gain, as a CLOSED set per language.
@@ -2671,30 +2676,57 @@ fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
         ("ить", "ят"),
         ("ить", "ил"),
     ];
-    // Greek, written as the fold leaves it — accents already stripped.
+    // Greek, written with the ORDINARY sigma throughout: `inflection_family`
+    // canonicalises the final form to it before matching, so a pattern
+    // written with the final sigma matches nothing at all.
     const EL: &[(&str, &str)] = &[
-        ("ος", "ου"),
-        ("ος", "οι"),
-        ("ος", "ων"),
-        ("ος", "ους"),
-        ("ος", "ο"),
-        ("α", "ες"),
+        ("οσ", "ου"),
+        ("οσ", "οι"),
+        ("οσ", "ων"),
+        ("οσ", "ουσ"),
+        ("οσ", "ο"),
+        ("α", "εσ"),
         ("α", "ων"),
-        ("α", "ας"),
-        ("η", "ης"),
-        ("η", "εις"),
+        ("α", "ασ"),
+        ("η", "ησ"),
+        ("η", "εισ"),
         ("η", "εων"),
-        ("ης", "η"),
-        ("ης", "ες"),
-        ("ης", "ων"),
+        ("ησ", "η"),
+        ("ησ", "εσ"),
+        ("ησ", "ων"),
         ("ω", "ει"),
-        ("ω", "εις"),
+        ("ω", "εισ"),
         ("ω", "ουμε"),
         ("ω", "ουν"),
         ("ομαι", "εται"),
         ("ομαι", "ονται"),
+        // Aorist stem mutation: labials, velars and the -ζω verbs.
+        ("φω", "ψα"),
+        ("πω", "ψα"),
+        ("βω", "ψα"),
+        ("κω", "ξα"),
+        ("γω", "ξα"),
+        ("χω", "ξα"),
+        ("ζω", "σα"),
+    ];
+    const NL: &[(&str, &str)] = &[("", "en"), ("s", "zen"), ("f", "ven"), ("", "s")];
+    // Devanagari. The oblique a-matra -> e-matra is the one substitution here;
+    // the plural and oblique-plural endings append.
+    const HI: &[(&str, &str)] = &[
+        ("", "\u{947}\u{902}"),
+        ("", "\u{94b}\u{902}"),
+        ("\u{93e}", "\u{947}"),
+    ];
+    // Georgian: nominative -i against the plural and the case endings.
+    const KA: &[(&str, &str)] = &[
+        ("\u{10d8}", "\u{10d4}\u{10d1}\u{10d8}"),
+        ("\u{10d8}", "\u{10e8}\u{10d8}"),
+        ("\u{10d8}", "\u{10e1}"),
     ];
     match lang {
+        MorphLang::Dutch => NL,
+        MorphLang::Hindi => HI,
+        MorphLang::Georgian => KA,
         MorphLang::Italian => IT,
         MorphLang::Spanish => ES,
         MorphLang::French => FR,
@@ -2703,6 +2735,78 @@ fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
         MorphLang::Greek => EL,
         _ => NONE,
     }
+}
+
+/// Suffixes an agglutinative language STACKS, matched at the front of what is
+/// left after the stem — never as a whole ending.
+///
+/// `strip_suffix` cannot see these. Turkish `kitaplarımızdan` is `kitap` +
+/// `lar` + `ımız` + `dan`, four morphemes deep, and no fixed ending matches it;
+/// what identifies it is that the remainder *begins* with a real plural
+/// morpheme. So this rule anchors on the stem and asks only about the first
+/// suffix in the stack.
+///
+/// **Single-vowel suffixes are excluded on purpose.** Turkish dative is `-a`/
+/// `-e` after a consonant, so admitting it would merge `kar`/`kara` (snow /
+/// black), which is a control. The cost is that dative on a consonant stem is
+/// not reached; the alternative is a rule relating every noun to every noun
+/// ending in one more vowel.
+fn agglutinative_for(lang: MorphLang) -> &'static [&'static str] {
+    const NONE: &[&str] = &[];
+    const TR: &[&str] = &[
+        "ler", "lar", "de", "da", "te", "ta", "den", "dan", "ten", "tan", "in", "ın", "un", "ün",
+        "im", "ım", "um", "üm", "iyor", "ıyor", "uyor", "üyor", "ecek", "acak", "di", "dı", "du",
+        "dü", "ti", "tı", "miş", "mış", "siz", "sız", "lik", "lık", "luk", "lük",
+    ];
+    // Korean particles, which attach to an unchanged noun.
+    const KO: &[&str] = &[
+        "\u{c5d0}\u{c11c}",
+        "\u{c5d0}\u{ac8c}",
+        "\u{c5d0}",
+        "\u{c758}",
+        "\u{c744}",
+        "\u{b97c}",
+        "\u{c740}",
+        "\u{b294}",
+        "\u{b3c4}",
+        "\u{b9cc}",
+        "\u{bd80}\u{d130}",
+        "\u{ae4c}\u{c9c0}",
+    ];
+    match lang {
+        MorphLang::Turkish => TR,
+        MorphLang::Korean => KO,
+        _ => NONE,
+    }
+}
+
+/// Shortest stem an agglutinative language may inflect. Two, because Turkish
+/// `ev` (house) and Korean nouns genuinely are two characters — and two is safe
+/// HERE for the reason three is safe in `suffix_family`: the rule demands the
+/// stem match EXACTLY and the remainder begin with a real morpheme, not that
+/// the stem appear somewhere inside the word.
+const AGGLUTINATIVE_STEM_FLOOR: usize = 2;
+
+/// A stem carrying a stack of suffixes — `ev`/`evlerde`,
+/// `kitap`/`kitaplarımızdan`, `학교`/`학교에서`.
+fn agglutinative_family(q: &str, tok: &str, lang: MorphLang) -> bool {
+    let sufs = agglutinative_for(lang);
+    if sufs.is_empty() {
+        return false;
+    }
+    // Turkish cites a verb by its infinitive; the stack sits on the stem.
+    let bases = [
+        q,
+        q.strip_suffix("mek").unwrap_or(q),
+        q.strip_suffix("mak").unwrap_or(q),
+        q.strip_suffix("\u{b2e4}").unwrap_or(q),
+    ];
+    bases.iter().any(|base| {
+        base.chars().count() >= AGGLUTINATIVE_STEM_FLOOR
+            && tok
+                .strip_prefix(*base)
+                .is_some_and(|rest| sufs.iter().any(|sx| rest.starts_with(sx)))
+    })
 }
 
 /// Shortest stem an inflection may sit on. Three: Italian `cas`/`casa`/`case`
@@ -2719,13 +2823,40 @@ fn inflection_family(q: &str, tok: &str, lang: MorphLang) -> bool {
     if q == tok {
         return false;
     }
+    // Greek writes sigma in a FINAL form word-finally and an ordinary form
+    // everywhere else. It is one letter, and `search_key` keeps both — so a
+    // table written with the ordinary sigma missed EVERY `-os` noun in the
+    // language, silently, while the entries sat there looking correct. Folded
+    // here to keep the blast radius to this rule; doing it in `search_key` is
+    // the better fix and needs an `fts_key_version` bump.
+    let canon = |w: &str| -> String { w.replace('\u{3c2}', "\u{3c3}") };
+    // The Greek aorist prefixes an augment. Stripping it lets the stems meet —
+    // a real morpheme, not a guess about a leading vowel.
+    let forms = |w: &str| -> Vec<String> {
+        let c = canon(w);
+        let mut v = vec![c.clone()];
+        if lang == MorphLang::Greek {
+            if let Some(rest) = c.strip_prefix('\u{3b5}') {
+                if rest.chars().count() >= INFLECTION_STEM_FLOOR {
+                    v.push(rest.to_string());
+                }
+            }
+        }
+        v
+    };
+    let (qs, ts) = (forms(q), forms(tok));
     inflections_for(lang).iter().any(|(a, b)| {
-        [(a, b), (b, a)].iter().any(
-            |(x, y)| match (q.strip_suffix(**x), tok.strip_suffix(**y)) {
-                (Some(sq), Some(st)) => sq == st && sq.chars().count() >= INFLECTION_STEM_FLOOR,
-                _ => false,
-            },
-        )
+        [(a, b), (b, a)].iter().any(|(x, y)| {
+            qs.iter().any(|qf| {
+                ts.iter()
+                    .any(|tf| match (qf.strip_suffix(**x), tf.strip_suffix(**y)) {
+                        (Some(sq), Some(st)) => {
+                            sq == st && sq.chars().count() >= INFLECTION_STEM_FLOOR
+                        }
+                        _ => false,
+                    })
+            })
+        })
     })
 }
 
@@ -2884,6 +3015,86 @@ const IRREGULAR: &[(&str, &str)] = &[
     ("throw", "threw"),
     ("fly", "flew"),
     ("steal", "stole"),
+    // The other languages' suppletive cores. Each is a different stem bolted
+    // into one paradigm, so no rule over letters reaches any of them.
+    // Italian.
+    ("andare", "vado"),
+    ("andare", "va"),
+    ("essere", "e"),
+    ("essere", "sono"),
+    ("essere", "era"),
+    ("avere", "ha"),
+    ("avere", "ho"),
+    ("fare", "faccio"),
+    // French.
+    ("aller", "vais"),
+    ("aller", "va"),
+    ("etre", "est"),
+    ("etre", "suis"),
+    ("etre", "etait"),
+    ("avoir", "ai"),
+    ("avoir", "avait"),
+    ("faire", "fait"),
+    ("pouvoir", "peut"),
+    ("vouloir", "veut"),
+    // Portuguese.
+    ("ser", "foi"),
+    ("ser", "e"),
+    ("ir", "foi"),
+    ("ir", "vai"),
+    ("ter", "tem"),
+    ("fazer", "fez"),
+    // Dutch.
+    ("gaan", "ging"),
+    ("zijn", "was"),
+    ("zijn", "is"),
+    ("hebben", "heeft"),
+    ("hebben", "had"),
+    ("spreken", "spreekt"),
+    ("stad", "steden"),
+    ("schip", "schepen"),
+    ("kind", "kinderen"),
+    // Russian: suppletion and the consonant mutations no ending table sees.
+    (
+        "\u{447}\u{435}\u{43b}\u{43e}\u{432}\u{435}\u{43a}",
+        "\u{43b}\u{44e}\u{434}\u{438}",
+    ),
+    (
+        "\u{43f}\u{438}\u{441}\u{430}\u{442}\u{44c}",
+        "\u{43f}\u{438}\u{448}\u{435}\u{442}",
+    ),
+    (
+        "\u{440}\u{435}\u{431}\u{451}\u{43d}\u{43e}\u{43a}",
+        "\u{434}\u{435}\u{442}\u{438}",
+    ),
+    ("\u{438}\u{434}\u{442}\u{438}", "\u{448}\u{451}\u{43b}"),
+    // Greek.
+    (
+        "\u{3b2}\u{3bb}\u{3b5}\u{3c0}\u{3c9}",
+        "\u{3b5}\u{3b9}\u{3b4}\u{3b1}",
+    ),
+    (
+        "\u{3c4}\u{3c1}\u{3c9}\u{3c9}",
+        "\u{3b5}\u{3c6}\u{3b1}\u{3b3}\u{3b1}",
+    ),
+    ("\u{3bb}\u{3b5}\u{3c9}", "\u{3b5}\u{3b9}\u{3c0}\u{3b1}"),
+    // Persian.
+    (
+        "\u{631}\u{641}\u{62a}\u{646}",
+        "\u{645}\u{6cc}\u{200c}\u{631}\u{648}\u{645}",
+    ),
+    (
+        "\u{631}\u{641}\u{62a}\u{646}",
+        "\u{645}\u{6cc}\u{631}\u{648}\u{645}",
+    ),
+    // Korean: the contraction shares no character with its citation form.
+    ("\u{d558}\u{b2e4}", "\u{d574}\u{c694}"),
+    ("\u{ba39}\u{b2e4}", "\u{ba39}\u{c5c8}\u{c5b4}\u{c694}"),
+    ("\u{c774}\u{b2e4}", "\u{c608}\u{c694}"),
+    // Persian: the ZWNJ in the present stem is not alphanumeric, so the
+    // segmenter splits it and the drawer's token is the bare stem. A table has
+    // to name the token that exists, not the citation form.
+    ("رفتن", "روم"),
     // Spanish — the suppletive and stem-changing verbs. Spanish plurals are
     // additive and the suffix rule already takes them; what it cannot take is
     // a verb whose stem changes, and `ser`/`fue` shares no letters at all.
@@ -3093,7 +3304,11 @@ fn morph_relation(q: &str, tok: &str, lang: MorphLang) -> bool {
     // of the rule, and Greek's beneficiaries are nine real paradigm forms.
     // A named irregular form, and a regular ending on a stem the two share.
     // Both are pairwise and neither creates a class.
-    if irregular_pair(q, tok) || suffix_family(q, tok, lang) || inflection_family(q, tok, lang) {
+    if irregular_pair(q, tok)
+        || suffix_family(q, tok, lang)
+        || inflection_family(q, tok, lang)
+        || agglutinative_family(q, tok, lang)
+    {
         return true;
     }
     rule.prefix_family && greek_word_family(q, tok)

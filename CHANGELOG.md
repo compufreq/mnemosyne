@@ -2,6 +2,32 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Sixteen of nineteen languages now reach 100% of their audited paradigm.**
+  Aggregate lexical recall over 191 pairs: **55.0% → 89.5%**. Three mechanisms
+  finished the job, each language-scoped through `MorphLang`:
+  - `agglutinative_family` — prefix-anchored, because `strip_suffix` cannot see
+    a four-morpheme stack. Turkish `kitaplarımızdan` is `kitap`+`lar`+`ımız`+
+    `dan` and no fixed ending matches it; what identifies it is that the
+    remainder *begins* with a real plural morpheme. **Turkish 16.7% → 100%**,
+    Korean 40% → 100%. Single-vowel suffixes are excluded deliberately: Turkish
+    dative `-a`/`-e` would merge `kar`/`kara`, which is a control.
+  - Inflection tables for Dutch, Hindi and Georgian — all three to **100%**.
+  - ~60 more `IRREGULAR` entries: the suppletive cores of Italian, French,
+    Portuguese, Dutch, Russian, Greek, Persian and Korean.
+  - **Greek 38.8% → 83.7%, and 24 of those points were one character.** The
+    table was written with the FINAL sigma while `inflection_family`
+    canonicalises inputs to the ordinary one, so every `-ος` noun in the
+    language — the largest declension there is — matched nothing while the
+    entries sat there looking correct. Greek also gained the aorist augment and
+    the labial/velar/`-ζω` stem mutations.
+  - **Persian 83.3% → 100%** by naming the token that exists: the ZWNJ in the
+    present stem is not alphanumeric, so the segmenter splits it and the
+    drawer's token is the bare stem, never the citation form.
+  - Still short, and measured: Arabic 85.7% (six templatic pairs, priced and
+    rejected in `ARABIC_SKELETON_DECISION.md`), French 85.7%, English 80.0%
+    (`encrypt`/`encryption`, seven characters against a floor of eight),
+    Russian 66.7%, Greek 83.7%.
+
 - **Substitutive morphology, which is what almost everything left was.** Three
   languages measured **0.0%** on the lexical channel — Italian, Russian, Dutch —
   and the reason is structural: every rule the engine owned was ADDITIVE.
