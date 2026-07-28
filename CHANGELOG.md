@@ -1,7 +1,90 @@
 # Changelog
 
-## Unreleased — temporal fidelity: keep the data we were dropping
+## Unreleased — the comparison layer, and dates that are declared rather than guessed
 
+- **A date's calendar and field order are DECLARED, never inferred.** `Locale`
+  gains `calendar` and `date_order` beside `language` and `week_start`, all
+  read-time, so an already-ingested corpus answers correctly the moment a caller
+  declares its conventions — no migration, no re-embed, no FTS rebuild.
+  Calendars: Gregorian, Buddhist (`-543`), Minguo (`+1911`), Hijri
+  (**Umm al-Qura**, the Saudi civil calendar) and Jalali. The last two are not
+  renumbered Gregorian years — lunar drift is ~11 days a year and Jalali turns
+  at the vernal equinox with different month lengths — so conversion is
+  whole-date and delegated to `calendrical_calculations` (Apache-2.0, three
+  transitive deps, pure algorithm with no data files, Unicode Consortium /
+  ICU4X). Tabular Hijri was the easy implementation and is wrong by a day or two
+  against what documents actually carry.
+  - **Two guesses removed.** `iso_token` subtracted 543 from any year written in
+    Thai numerals, so `๒๐๒๖-๐๕-๐๗` — an ordinary Gregorian 2026 — resolved to
+    **1483**, in a function whose docstring said "exact rather than heuristic".
+    A numeral system is not a calendar. The next attempt guarded on range and
+    made `2566-05-13` vanish instead, losing the dates in a novel, an astronomy
+    note or a century-scale plan. `GREGORIAN_MAX = 2199` is retired: it existed
+    only to stop Buddhist 2566 reading as Gregorian 2566, and once a calendar
+    could be declared it began causing the harm it was built to prevent.
+  - **Field order takes four signals, strongest first:** declared on `Locale`;
+    demonstrated by the text (`13/05` can only be day-first, so an unambiguous
+    date states the writer's convention by example — evidence, not inference);
+    implied by the language (CLDR gives `ar` as `d/M/y` in every Arabic
+    territory, while English splits US/Commonwealth and implies nothing); and
+    failing all three, day-first, the majority convention worldwide. This
+    reverses a considered position — the module recorded `05/07/2023` unresolved
+    because "picking one would be a coin flip reported as a fact" — on the
+    grounds that a memory returning no date is unusable. Cost, pinned by test: a
+    US corpus that never declares `MonthFirst` reads `07/05` as 7 May.
+- **Ordinary Arabic prose stopped inventing dates.** `AR_AGO` contained `من`,
+  among the commonest words in the language, and the branch required no
+  confirming evidence — so `الخامس من الشهر` ("the fifth OF THE MONTH") resolved
+  to a month before the anchor and `أكثر من ثلاثة أيام` ("more THAN three days")
+  to three days ago. `ar_ago_is_temporal` now needs clause-initial position, a
+  count reaching a unit, and no range marker closing it: an allowlist, because a
+  blocklist of quantifiers fabricates on the first one nobody enumerated while an
+  allowlist fails by going quiet. Stated cost: a mid-sentence
+  `كان الاجتماع من ثلاثة أيام` is no longer read. Also `قبل الشهر الماضي` is
+  "before LAST month" — `قبل` yields the noun to a following period modifier
+  instead of resolving one unit back and stranding `الماضي`.
+- **Numeric dates read in any digit system** — Arabic-Indic, Persian,
+  Devanagari, Bengali, Thai, fullwidth. `٢٠٢٣-٠٥-٠٧` was unread *even under*
+  `Language::Arabic`, because the parsers used `str::parse`, which is ASCII-only:
+  the numeric channel was closed to exactly the languages whose word-forms the
+  module also cannot read. And a month NAME joined by hyphens now reads —
+  `2023-May-07`, `٠٧-أيار-٢٠٢٣` — where both languages previously yielded
+  **nothing**, because `-` is a token character so the whole date arrived as one
+  token the digit readers declined and the month-name arms never saw.
+- **Six readers now agree about the same date.** `iso_token`, `dmy_token`,
+  `named_date_token`, both English month-name arms and the Arabic one gated years
+  at two different bounds, so `iso_token("2566-05-13")` refused while
+  `May 13, 2566` one screen away resolved. Pinned as an invariant rather than a
+  constant, since the constant has since been right, wrong and removed while the
+  invariant never changed.
+- **Hebrew was the only language in a 15-language audit to admit nothing at
+  all** — 0 of 8 pairs, at every drawer length, on every channel. It writes with
+  spaces, so `Script::Other` treated it as delimiting, which handed it an
+  8-character floor for 3-character stems *and* excluded it from `shares_a_stem`.
+  Its clitics attach with no delimiter, exactly as Arabic's do. Now
+  `Script::Hebrew`, non-delimiting, with the points (niqqud) folded for the same
+  reason the Arabic harakat already are — `maqaf`, `paseq` and `sof pasuq` are
+  deliberately excluded, being delimiters.
+- **One morphological rule table, dispatched per script.** The engine had a
+  single relation — substring containment — with one global constant, and across
+  15 languages and 189 real paradigm pairs it dropped **51.5%** of morphological
+  relations at realistic drawer length. Three different shapes, one constant:
+  Arabic's root is a *subsequence* (`كتب` inside `كتاب`), Greek's ending
+  *substitutes* so the stem is a shared *prefix*, and Turkish is purely additive
+  yet scored 16.7% because its stems are shorter than the floor. Arabic and
+  Hebrew are one family and take one tool — a consonantal skeleton, equality at a
+  ≥3-radical floor, measured **7× tighter** than the containment rule already
+  shipped. Greek gets a script-scoped shared-prefix rule; Latin does not, because
+  its documented cost (`conversation`/`conversion`) is Latin and the nine
+  beneficiaries are Greek.
+  - **A recall-only measurement is not a precision justification.** The
+    delimiting floor was lowered 8→5 on a promiscuity figure (3.03 mean links for
+    English) that counts *how many* words a rule reaches and cannot see whether
+    any of them is correct. Measured against the engine afterwards it admitted
+    `other`/`mother`, `count`/`accounting`, `press`/`depression`,
+    `stand`/`understand`. Reverted; Turkish, Hindi, Spanish and English return to
+    their prior numbers, and reaching them needs a per-LANGUAGE floor, since
+    Turkish and English share a script and disagree about the right value.
 - **A shared fragment is not evidence — Arabic was admitting the whole vault.**
   Measured against the shipped code on a real 50k-word Arabic frequency corpus
   with control drawers: **one Arabic content word admitted 74.3% of a

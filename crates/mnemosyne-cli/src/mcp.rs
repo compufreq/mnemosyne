@@ -172,7 +172,7 @@ fn tool_definitions() -> Value {
             json!({ "content": s("verbatim text"), "wing": s("person/project partition"), "room": s("topic"), "content_date": s("when the content happened, RFC 3339 or YYYY-MM-DD; anchors relative dates in the text") }),
             &["content"]),
         tool("mnemosyne_search", "Hybrid semantic + lexical search over stored memories.",
-            json!({ "query": s("search query"), "wing": s("scope to wing"), "room": s("scope to room"), "limit": i("max results"), "as_of": s("reference date (RFC 3339 or YYYY-MM-DD) — the engine reports how long before it each memory happened, exactly, instead of leaving you to work it out"), "language": s("language of the stored text: en (default) or ar. Arabic is a different grammar, not a word list — the past marker precedes the count and the dual is one word — and it reads Saturday-first weeks") }),
+            json!({ "query": s("search query"), "wing": s("scope to wing"), "room": s("scope to room"), "limit": i("max results"), "as_of": s("reference date (RFC 3339 or YYYY-MM-DD) — the engine reports how long before it each memory happened, exactly, instead of leaving you to work it out"), "language": s("language of the stored text: en (default) or ar. Arabic is a different grammar, not a word list — the past marker precedes the count and the dual is one word — and it reads Saturday-first weeks"), "date_order": s("which field a bare numeric date puts first: day_first or month_first. Omit and the engine uses any unambiguous date in the same drawer as evidence, then day-first. Cannot be guessed from the language — US English is month-first, Commonwealth day-first"), "calendar": s("which calendar counted the year: gregorian (default), buddhist, minguo, hijri (Umm al-Qura), jalali. NEVER inferred — Thai script writes Gregorian dates and Thai numerals are a numeral system, not a calendar") }),
             &["query"]),
         tool("mnemosyne_wake_up", "Load session context: recent essential memories.",
             json!({ "wing": s("scope to wing") }), &[]),
@@ -300,6 +300,35 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
             let locale = match opt_str(args, "language") {
                 Some("ar") | Some("arabic") => mnemosyne_core::temporal::Locale::ARABIC,
                 _ => mnemosyne_core::temporal::Locale::ENGLISH,
+            };
+            // Reading conventions, declared rather than detected. A numeric
+            // date's field order cannot be derived from the language (US
+            // month-first, Commonwealth day-first, both English) and a calendar
+            // cannot be derived from the text at all — script is not evidence
+            // and a numeral system is not a calendar.
+            let locale = match opt_str(args, "date_order") {
+                Some("month_first") | Some("mdy") | Some("us") => {
+                    locale.with_date_order(mnemosyne_core::temporal::DateOrder::MonthFirst)
+                }
+                Some("day_first") | Some("dmy") => {
+                    locale.with_date_order(mnemosyne_core::temporal::DateOrder::DayFirst)
+                }
+                _ => locale,
+            };
+            let locale = match opt_str(args, "calendar") {
+                Some("buddhist") | Some("be") | Some("thai") => {
+                    locale.with_calendar(mnemosyne_core::temporal::Calendar::Buddhist)
+                }
+                Some("minguo") | Some("roc") | Some("taiwan") => {
+                    locale.with_calendar(mnemosyne_core::temporal::Calendar::Minguo)
+                }
+                Some("hijri") | Some("islamic") | Some("umalqura") => {
+                    locale.with_calendar(mnemosyne_core::temporal::Calendar::Hijri)
+                }
+                Some("jalali") | Some("persian") | Some("solar_hijri") => {
+                    locale.with_calendar(mnemosyne_core::temporal::Calendar::Jalali)
+                }
+                _ => locale,
             };
             let mut out = String::new();
             for (i, h) in hits.iter().enumerate() {

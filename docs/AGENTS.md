@@ -274,6 +274,52 @@ embedder's job. **Reading dates inside the text** is the scanner's, selected
 per request with `language` (`en`, `ar`), and it works regardless of which
 embedder found the drawer.
 
+### Reading conventions are declared, not detected
+
+Four read-time fields decide how a drawer's dates are read. All are per request,
+all default to prior behaviour, and because mentions are re-read live an
+already-ingested corpus answers correctly the moment you declare its conventions
+— no re-ingest, no re-embed.
+
+| field | values | default | what it decides |
+|---|---|---|---|
+| `language` | `en`, `ar` | `en` | which scanner reads the words. Arabic is a grammar, not a word list: the past marker precedes the count (`قبل ثلاثة أيام`), the dual is one word (`يومين`), period modifiers follow their noun |
+| `week_start` | `monday`, `sunday`, `saturday` | `monday` (`saturday` for `ar`) | which day begins a week — moves "last week" and every week count |
+| `date_order` | `day_first`, `month_first` | see below | which field a bare numeric date puts first |
+| `calendar` | `gregorian`, `buddhist`, `minguo`, `hijri`, `jalali` | `gregorian` | which calendar counted the year |
+
+**`date_order`** — `07/05/2023` is 7 May or 5 July and the token does not say.
+Four signals are consulted, strongest first:
+
+1. what you declared on the request;
+2. what the text demonstrates about itself — `13/05` can only be day-first, so
+   an unambiguous date anywhere in the same drawer states the writer's
+   convention by example. This is evidence, not inference, and it overrides the
+   default without any configuration;
+3. what the language implies — CLDR gives `ar` as `d/M/y` in every Arabic
+   territory, so Arabic declares day-first. English splits US/Commonwealth and
+   implies nothing, which is why it does not;
+4. failing all three, **day-first** — the majority convention worldwide.
+
+The cost of that last step is explicit: a US corpus that never declares
+`month_first` reads `07/05` as 7 May. Declare it once and the whole corpus reads
+correctly, retroactively.
+
+**`calendar`** — nothing is inferred here, ever. Script is not evidence (Thai
+script writes Gregorian dates constantly) and neither is the numeral system
+(`๒๐๒๖` is an ordinary Gregorian 2026 typed in Thai digits). An undeclared
+corpus reads years as written, so a Thai date reads 543 years high until you say
+`buddhist` — visible and correctable, where a silently dropped date is neither.
+Buddhist and Minguo are renumbered Gregorian years and convert by arithmetic;
+Hijri (**Umm al-Qura**, the Saudi civil calendar) and Jalali are different
+calendars — lunar drift, an equinox-anchored new year, different month lengths —
+so they convert as whole dates.
+
+Not yet read: **era markers written in the text** (`พ.ศ.`, `ค.ศ.`, `هـ`, `م`,
+令和, 民國). Those would outrank a declared calendar, being the writer's statement
+about one date rather than yours about a corpus, and they are blocked on a
+tokenizer change — attached forms like `1447هـ` arrive as a single mixed token.
+
 **Second stage** (`MNEMOSYNE_RERANKER`): `onnx`/`ort` = cross-encoder
 re-scoring of the top `MNEMOSYNE_RERANK_TOP_N` (default 50) — measured
 LoCoMo R@10 94.6→97.7%; `colbert`/`colbert-ort` = late interaction: encode

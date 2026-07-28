@@ -31,7 +31,15 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   **not** stripped — ZWSP is Khmer's word delimiter and ZWJ is contrastive in
   Malayalam. Every fold's conflation is pinned by test: على/علي, كتابة/كتابه,
   Masse/Maße, πότε/ποτέ, все/всё),
-  script-aware segmentation (`script.rs`: `Script` +
+  script-aware segmentation (`script.rs`: `Script` — Hebrew is
+  `attaches_without_delimiter`, NOT `Other`: it writes with spaces but its
+  clitics (`ה`/`ב`/`ל`/`ו`/`מ`/`ש`) attach with none, exactly as Arabic's do,
+  and classed as delimiting it got an 8-character floor for 3-character stems
+  while being excluded from `shares_a_stem` — measured, the only language in a
+  15-language audit to admit **nothing at all**. A two-character subrun is a
+  WORD, not a fragment, so `emit` flags n-grams only above length two: `גן`,
+  `בן`, `יד` were exact matches before the reclassification and became
+  unreachable after it. +
   `segment` — splitting on `!is_alphanumeric` finds no boundary in Han, Kana,
   Hangul, Bopomofo, Arabic, Khmer, Thai, Lao or Myanmar, so a clause became
   one token and a query for a word the drawer contains returned **nothing at
@@ -89,7 +97,27 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   `describe_interval` (years counted on the calendar, never days/365),
   `WeekStart::{Monday,Sunday,Saturday}` since first-day-of-week is locale
   data and it moves "last week"/"this Thursday" as well as the counts
-  (`*_with` variants throughout); `Locale{language,week_start}` +
+  (`*_with` variants throughout); `Locale{language,week_start,date_order,
+  calendar}` — FOUR read-time declarations, none of them inferred, because
+  script is not evidence (Thai script writes Gregorian constantly) and a
+  numeral system is not a calendar (`๒๐๒๖` is an ordinary Gregorian 2026 in
+  Thai digits and reading the glyphs as an era claim resolved it to **1483**).
+  `Calendar::{Gregorian,Buddhist,Minguo,Hijri,Jalali}` — the first three are a
+  renumbered year and convert by arithmetic; Hijri (**Umm al-Qura**, the Saudi
+  civil calendar, NOT the tabular variant that is easy to write and wrong by a
+  day or two) and Jalali are different calendars, so conversion is whole-date
+  via `calendrical_calculations` (Apache-2.0, 3 transitive deps, pure algorithm,
+  no data files, Unicode Consortium/ICU4X — attributed in NOTICE).
+  `DateOrder` takes four signals strongest-first: declared; **demonstrated by
+  the text** (`13/05` can only be day-first, so an unambiguous date states the
+  writer's convention by example — EVIDENCE, not inference); implied by the
+  language (CLDR gives `ar` as d/M/y in every Arabic territory, English splits
+  US/Commonwealth and implies nothing, which is why `Locale::ARABIC` declares an
+  order and `Locale::ENGLISH` does not); then day-first. There is no
+  `GREGORIAN_MAX` any more — it bounded years at 2199 to stop Buddhist 2566
+  reading as Gregorian 2566, and once a calendar could be declared it began
+  discarding legitimate far-future dates (a novel, an astronomy note) to guard
+  against an ambiguity a declaration settles; `Locale{language,week_start}` +
   `Language::{English,Arabic}` selects a **scanner, not a table** —
   Arabic puts the past marker before the count (قبل ثلاثة أيام), has a
   dual (يومين = two days as one word), puts period modifiers after the
@@ -311,6 +339,21 @@ Heavy cargo work: use the `mnemosyne-target` volume + `CARGO_TARGET_DIR=/build`
   rename (+ dir sync), and key material is fsynced at creation. The
   anchor must never run **ahead** of the database — that combination is
   what makes a power loss reconcile as a crash instead of a tamper alarm.
+- **A signal is read; a convention is declared; nothing is inferred.** The
+  never-guess contract forbids INFERENCE, not EVIDENCE — a distinction that cost
+  five attempts to get right. Reading an era marker the writer typed, or a
+  field order an unambiguous date in the same drawer demonstrates, or a
+  convention the caller declared on `Locale`, are all legitimate. Deriving a
+  calendar from surrounding script, or an era from a numeral system, or a field
+  order from a numeric range, are not. Where no signal exists the honest answers
+  are a documented default (day-first) or a recorded-but-unresolved mention —
+  never a confident value, and never silence.
+- **A recall measurement cannot justify a precision decision.** The
+  promiscuity instrument (how many words of a real 50k vocabulary one query
+  links to) counts reach and is blind to correctness; used to justify lowering
+  the delimiting floor 8→5 it admitted `other`/`mother` and
+  `count`/`accounting`. Any rule feeding a channel that ADMITS needs negative
+  controls, not just a link count.
 - Cross-vault access must fail cryptographically (AAD binds vault id), not
   just logically.
 - Vault/wing/room names go through `mnemosyne_core::validate_name` (path

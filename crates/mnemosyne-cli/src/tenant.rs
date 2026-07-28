@@ -70,7 +70,7 @@ fn elapsed_phrase(content_date: &Option<String>, as_of: Option<&str>) -> Option<
 /// because getting the language right and leaving the week European produces
 /// answers that are subtly rather than obviously wrong.
 fn locale_from(body: &Value) -> mnemosyne_core::temporal::Locale {
-    use mnemosyne_core::temporal::{Locale, WeekStart};
+    use mnemosyne_core::temporal::{Calendar, DateOrder, Locale, WeekStart};
     let mut locale = match body.get("language").and_then(Value::as_str) {
         Some("ar") | Some("arabic") => Locale::ARABIC,
         _ => Locale::ENGLISH,
@@ -80,6 +80,28 @@ fn locale_from(body: &Value) -> mnemosyne_core::temporal::Locale {
             "sunday" | "sun" => WeekStart::Sunday,
             "saturday" | "sat" => WeekStart::Saturday,
             _ => WeekStart::Monday,
+        });
+    }
+    // Which field a bare numeric date puts first. Declared, because it cannot be
+    // derived: US English is month-first and Commonwealth English day-first, and
+    // both are `Language::English`. Unrecognised values leave it undeclared,
+    // which falls through to what the text demonstrates and then to day-first —
+    // never to an error, since a reading convention is not worth a 400.
+    if let Some(order) = body.get("date_order").and_then(Value::as_str) {
+        locale = locale.with_date_order(match order {
+            "month_first" | "mdy" | "us" => DateOrder::MonthFirst,
+            "day_first" | "dmy" => DateOrder::DayFirst,
+            _ => DateOrder::Undeclared,
+        });
+    }
+    // Which calendar counted the year. Never inferred — see `Calendar`.
+    if let Some(cal) = body.get("calendar").and_then(Value::as_str) {
+        locale = locale.with_calendar(match cal {
+            "buddhist" | "be" | "thai" => Calendar::Buddhist,
+            "minguo" | "roc" | "taiwan" => Calendar::Minguo,
+            "hijri" | "islamic" | "umalqura" => Calendar::Hijri,
+            "jalali" | "persian" | "solar_hijri" => Calendar::Jalali,
+            _ => Calendar::Gregorian,
         });
     }
     locale
@@ -1402,4 +1424,75 @@ fn respond(req: Request, code: u16, body: &str, content_type: &str) {
             .with_status_code(code)
             .with_header(header),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mnemosyne_core::temporal::{Calendar, DateOrder, Language, WeekStart};
+
+    /// `locale_from` is the whole of the read-time convention surface, and this
+    /// file had no test module at all — so a renamed field or a typo in a value
+    /// would have shipped silently while `docs/AGENTS.md` promised it worked.
+    #[test]
+    fn the_request_declares_its_reading_conventions() {
+        let l = locale_from(&serde_json::json!({}));
+        assert_eq!(l.language, Language::English);
+        assert_eq!(l.week_start, WeekStart::Monday);
+        assert_eq!(
+            l.date_order,
+            DateOrder::Undeclared,
+            "English implies no order"
+        );
+        assert_eq!(l.calendar, Calendar::Gregorian);
+
+        // Arabic brings Saturday weeks and day-first with it: CLDR gives `ar` as
+        // d/M/y in every Arabic territory, so both follow from the language.
+        let l = locale_from(&serde_json::json!({"language": "ar"}));
+        assert_eq!(l.language, Language::Arabic);
+        assert_eq!(l.week_start, WeekStart::Saturday);
+        assert_eq!(l.date_order, DateOrder::DayFirst);
+
+        // Each convention is independently declarable, with the aliases a caller
+        // would actually reach for.
+        for (v, want) in [
+            ("month_first", DateOrder::MonthFirst),
+            ("mdy", DateOrder::MonthFirst),
+            ("us", DateOrder::MonthFirst),
+            ("day_first", DateOrder::DayFirst),
+            ("dmy", DateOrder::DayFirst),
+        ] {
+            let l = locale_from(&serde_json::json!({"date_order": v}));
+            assert_eq!(l.date_order, want, "date_order {v:?}");
+        }
+        for (v, want) in [
+            ("buddhist", Calendar::Buddhist),
+            ("thai", Calendar::Buddhist),
+            ("be", Calendar::Buddhist),
+            ("minguo", Calendar::Minguo),
+            ("roc", Calendar::Minguo),
+            ("hijri", Calendar::Hijri),
+            ("umalqura", Calendar::Hijri),
+            ("jalali", Calendar::Jalali),
+            ("persian", Calendar::Jalali),
+        ] {
+            let l = locale_from(&serde_json::json!({"calendar": v}));
+            assert_eq!(l.calendar, want, "calendar {v:?}");
+        }
+
+        // An unrecognised value falls back rather than failing: a reading
+        // convention is not worth a 400.
+        let l = locale_from(&serde_json::json!({"calendar": "mayan", "date_order": "sideways"}));
+        assert_eq!(l.calendar, Calendar::Gregorian);
+        assert_eq!(l.date_order, DateOrder::Undeclared);
+
+        // And they compose.
+        let l = locale_from(
+            &serde_json::json!({"language": "ar", "calendar": "hijri", "week_start": "sunday"}),
+        );
+        assert_eq!(l.language, Language::Arabic);
+        assert_eq!(l.calendar, Calendar::Hijri);
+        assert_eq!(l.week_start, WeekStart::Sunday);
+        assert_eq!(l.date_order, DateOrder::DayFirst, "still from the language");
+    }
 }
