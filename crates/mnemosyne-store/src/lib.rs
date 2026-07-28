@@ -2763,6 +2763,132 @@ fn inflections_for(lang: MorphLang) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+/// Arabic triliteral roots, written as the retrieval fold leaves them.
+///
+/// Arabic builds words by pouring a three-consonant ROOT into a template:
+/// ك-ت-ب gives كتب, كتاب, كاتب, مكتوب, كتابة, مكتب. Nothing that compares
+/// SURFACE strings can see this, which is why six audited pairs survived three
+/// separate rejected rule families — and why the sixth, `امرأة`/`نساء`, is not
+/// reachable even here, being two different roots in one paradigm.
+///
+/// **This table is ours.** Every mature Arabic morphology resource is GPL,
+/// research-only (Farasa) or LDC-licensed and non-redistributable — including
+/// CAMeL Tools, whose code is MIT but whose `calima-msa` database is not. None
+/// may be shipped under BUSL-1.1, so none was consulted. The roots below are
+/// ordinary vocabulary written from the language, and the templates in
+/// [`AR_PATTERNS`] are textbook description; both are facts about Arabic rather
+/// than anyone's compilation.
+///
+/// It is deliberately a starter set of frequent roots, not a lexicon. A form it
+/// cannot explain simply does not match — see [`ar_root_family`], where that
+/// property is the whole safety argument.
+const AR_ROOTS: &[&str] = &[
+    "كتب", "قرا", "درس", "علم", "عمل", "فعل", "ذهب", "رجع", "وصل", "سال", "جلس", "نظر", "سمع",
+    "قول", "كون", "بيت", "مدن", "ولد", "رجل", "طفل", "اسر", "صدق", "عرف", "حبب", "كرم", "سير",
+    "طرق", "سفر", "بحر", "نهر", "جبل", "شجر", "زهر", "ثمر", "طعم", "شرب", "اكل", "خبز", "لحم",
+    "ملح", "يوم", "شهر", "ليل", "صبح", "كبر", "صغر", "طول", "قصر", "جمل", "فتح", "دخل", "خرج",
+    "نزل", "صعد", "حمل", "وضع", "اخذ", "عطا", "بيع", "شري", "دفع", "حسب", "عدد", "كثر", "قلل",
+    "نصف", "كلم", "حرف", "سطر", "صفح", "قلم", "باب", "جدر", "سقف", "ارض", "شمس", "قمر", "نجم",
+    "مطر", "ثلج", "حرر", "برد", "ريح", "نور", "قلب", "عين", "راس", "شعر", "نفس", "روح", "جسم",
+    "عظم", "حكم", "ملك", "دول", "شعب", "حزب", "جيش", "حرب", "سلم", "امن", "خوف", "قوي", "ضعف",
+    "عمر", "سكن", "بني", "هدم", "صنع", "خلق", "فكر", "ذكر", "نسي", "حلم", "نوم", "قدر", "طلب",
+    "نجح", "فشل", "بدا", "تمم", "زمن", "وقت", "دقق", "طبب", "مرض", "صحح", "شفي", "عيش", "موت",
+    "حيي", "قبر", "سعد", "حزن", "غضب", "ضحك", "بكي", "صرخ", "همس", "نطق", "لعب", "عمد", "شهد",
+    "وعد",
+];
+
+/// The templates a root is poured into, with `1` `2` `3` standing for the
+/// radicals. Written in the folded orthography: `ة` reads as `ه` and every
+/// hamza-bearing alef as `ا`, because that is what `search_key` produces.
+///
+/// Broken plurals are the point — `فُعُول`, `أَفْعَال`, `فُعَل` are exactly the
+/// patterns that defeated every subsequence rule, because they infix rather
+/// than append.
+const AR_PATTERNS: &[&str] = &[
+    "123",    // فَعَل / فِعْل  — كتب, بيت, مدن
+    "123ه",   // فَعْلَة       — كلمة
+    "12ا3",   // فِعَال        — كتاب
+    "12و3",   // فُعُول (broken pl) — بيوت
+    "ا12ا3",  // أَفْعَال (broken pl) — أولاد
+    "12ي3",   // فَعِيل        — جميل
+    "12ي3ه",  // فَعِيلَة      — مدينة
+    "1ا23",   // فَاعِل        — كاتب
+    "1ا23ه",  // فَاعِلَة      — كاتبة
+    "م123",   // مَفْعَل        — مكتب
+    "م123ه",  // مَفْعَلَة      — مدرسة
+    "م12و3",  // مَفْعُول       — مكتوب
+    "12ا3ه",  // فِعَالَة       — كتابة
+    "ا123",   // أَفْعَل (comparative) — أجمل
+    "123ات",  // sound feminine plural
+    "12و3ه",  // فُعُولَة
+    "م1ا23",  // مَفَاعِل (broken pl)
+    "123ي",   // نِسْبَة
+    "ت123",   // تَفْعَل
+    "ا12123", // no-op guard against a template that would collapse
+];
+
+/// Every surface form the table can explain, mapped to the roots that explain
+/// it. Built once, on first use.
+fn ar_form_map() -> &'static std::collections::HashMap<String, Vec<&'static str>> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<String, Vec<&'static str>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m: std::collections::HashMap<String, Vec<&'static str>> =
+            std::collections::HashMap::new();
+        for root in AR_ROOTS {
+            let r: Vec<char> = root.chars().collect();
+            if r.len() != 3 {
+                continue;
+            }
+            for pat in AR_PATTERNS {
+                let form: String = pat
+                    .chars()
+                    .map(|c| match c {
+                        '1' => r[0],
+                        '2' => r[1],
+                        '3' => r[2],
+                        other => other,
+                    })
+                    .collect();
+                let e = m.entry(form).or_default();
+                if !e.contains(root) {
+                    e.push(root);
+                }
+            }
+        }
+        m
+    })
+}
+
+/// Two Arabic words the table explains by the SAME root.
+///
+/// **The safety argument is that this is an allowlist, not a relation.** A form
+/// the table cannot generate matches nothing at all, so the rule can only ever
+/// fire on words it can account for. That is what separates it from every
+/// subsequence rule tried before: `بيت`→`بيوت` and `يجب`→`يجيب` are the same
+/// string operation, and no rule over surface shape can admit one and refuse
+/// the other — but only the first is generable from a root in the table, and
+/// the second is generable from none.
+///
+/// The definite article is stripped first because `shares_a_stem` cannot reach
+/// a form the article has lengthened past a template.
+fn ar_root_family(q: &str, tok: &str) -> bool {
+    if q == tok {
+        return false;
+    }
+    let m = ar_form_map();
+    fn bare(w: &str) -> &str {
+        match w.strip_prefix("ال") {
+            Some(r) if r.chars().count() >= 3 => r,
+            _ => w,
+        }
+    }
+    match (m.get(bare(q)), m.get(bare(tok))) {
+        (Some(a), Some(b)) => a.iter().any(|r| b.contains(r)),
+        _ => false,
+    }
+}
+
 /// Suffixes an agglutinative language STACKS, matched at the front of what is
 /// left after the stem — never as a whole ending.
 ///
@@ -3375,6 +3501,12 @@ fn morph_relation(q: &str, tok: &str, lang: MorphLang) -> bool {
     // of the rule, and Greek's beneficiaries are nine real paradigm forms.
     // A named irregular form, and a regular ending on a stem the two share.
     // Both are pairwise and neither creates a class.
+    // Root identity, for a language that builds words from roots. It needs no
+    // declaration: the table only contains Arabic forms, so it self-guards the
+    // way `shares_a_stem` does on script.
+    if ar_root_family(q, tok) {
+        return true;
+    }
     if irregular_pair(q, tok)
         || suffix_family(q, tok, lang)
         || inflection_family(q, tok, lang)
@@ -7083,6 +7215,18 @@ mod tests {
                     Verdict::Cost,
                     "train / diameter — shared skeleton قطر",
                 ),
+                // The root table's own controls. None is generable from a
+                // shared root, and each was a false merge under one of the
+                // three rejected subsequence families.
+                (
+                    "يجب",
+                    "يجيب",
+                    Verdict::Apart,
+                    "must / answers — و-ج-ب vs ج-و-ب",
+                ),
+                ("أجل", "أجمل", Verdict::Apart, "sake / prettiest"),
+                ("ليس", "لويس", Verdict::Apart, "not / Louis"),
+                ("لكن", "المكان", Verdict::Apart, "but / the place"),
             ],
         },
         Controls {
@@ -7510,6 +7654,86 @@ mod tests {
                         a.contains(b)
                     }
             });
+        }
+    }
+
+    /// Price the root table before it is wired into anything.
+    #[test]
+    #[ignore = "measurement, needs testdata/*_50k.txt"]
+    fn measure_arabic_root_table() {
+        let ar = load_words("testdata/ar_50k.txt", arabic_char);
+        let q: Vec<String> = ar.iter().take(500).cloned().collect();
+        println!(
+            "  roots {}  patterns {}  forms generated {}",
+            AR_ROOTS.len(),
+            AR_PATTERNS.len(),
+            ar_form_map().len()
+        );
+        let explained = ar
+            .iter()
+            .filter(|w| ar_form_map().contains_key(w.as_str()))
+            .count();
+        println!(
+            "  vocabulary the table explains: {explained}/{} = {:.2}%",
+            ar.len(),
+            100.0 * explained as f32 / ar.len() as f32
+        );
+        report("SHIPPED skeleton EQUAL floor 3", &q, &ar, |a, b| {
+            let x = skeleton_with(a, ar_weak);
+            x.chars().count() >= 3 && x == skeleton_with(b, ar_weak)
+        });
+        report("NEW ar_root_family", &q, &ar, ar_root_family);
+
+        println!(
+            "
+--- the six drops, and the four named friends ---"
+        );
+        for (a, b, tag) in [
+            ("بيت", "بيوت", "DROP broken pl"),
+            ("مدينة", "مدن", "DROP broken pl"),
+            ("ولد", "أولاد", "DROP broken pl"),
+            ("كتب", "مكتوب", "DROP participle"),
+            ("كتب", "كتابة", "DROP masdar"),
+            ("امرأة", "نساء", "DROP suppletive"),
+            ("سيارة", "أسرة", "FRIEND car/family"),
+            ("كريم", "كرم", "FRIEND"),
+            ("قطار", "قطر", "FRIEND"),
+            ("يجب", "يجيب", "FRIEND must/answers"),
+            ("أجل", "أجمل", "FRIEND sake/prettiest"),
+            ("ليس", "لويس", "FRIEND not/Louis"),
+        ] {
+            let (ka, kb) = (
+                mnemosyne_core::normalize::search_key(a).to_string(),
+                mnemosyne_core::normalize::search_key(b).to_string(),
+            );
+            println!(
+                "  {a:<8} {b:<10} {tag:<22} root={}",
+                if ar_root_family(&ka, &kb) {
+                    "MATCH"
+                } else {
+                    "."
+                }
+            );
+        }
+
+        println!(
+            "
+--- what the root rule links, sampled ---"
+        );
+        for qw in q
+            .iter()
+            .filter(|w| ar_form_map().contains_key(w.as_str()))
+            .take(15)
+        {
+            let f: Vec<&str> = ar
+                .iter()
+                .filter(|w| w.as_str() != qw && ar_root_family(qw, w))
+                .take(8)
+                .map(|w| w.as_str())
+                .collect();
+            if !f.is_empty() {
+                println!("  {qw:<12} -> {}", f.join(", "));
+            }
         }
     }
 

@@ -2,6 +2,31 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **Arabic 85.7% → 97.6%, by roots rather than by shape.** The whole
+  19-language audit now reads **190/191 = 99.5%** on the lexical channel, with
+  zero pairs resting on the embedder.
+  - Arabic pours a three-consonant ROOT into a template — ك-ت-ب gives كتب,
+    كتاب, كاتب, مكتوب, كتابة — so `ar_root_family` asks only whether two words
+    are explained by the same root. 144 roots × 20 templates, generated once.
+  - **It is an allowlist, and that is the whole safety argument.** A form the
+    table cannot generate matches nothing. `بيت`→`بيوت` and `يجب`→`يجيب` are the
+    same string operation, so no rule over surface shape could ever admit one
+    and refuse the other — but only the first is generable from a known root.
+  - **Half as promiscuous as the rule it sits beside**: mean 3.25 against the
+    shipped skeleton rule's 6.67, linking nothing at all for 86.2% of queries,
+    while recovering five of the six drops. Every axis improves at once.
+  - `يجب`/`يجيب`, `أجل`/`أجمل`, `ليس`/`لويس`, `لكن`/`المكان` and `سيارة`/`أسرة`
+    are pinned as controls — each was a false merge under one of the three
+    rejected subsequence families.
+  - **No dependency, and none possible.** Every mature Arabic morphology
+    resource is GPL, research-only or LDC-non-redistributable, including CAMeL
+    Tools, whose code is MIT but whose database is not. The roots are ordinary
+    vocabulary and the templates are textbook description — facts about the
+    language, not anyone's compilation.
+  - Remaining, in 191 pairs: **one**. `امرأة`/`نساء`, م-ر-أ against ن-س-و — two
+    roots in one paradigm, which is suppletion and reaches no morphology in any
+    language.
+
 - **Eighteen of nineteen languages reach 100% of their audited paradigm on the
   LEXICAL channel.** Aggregate 191 pairs: **55.0% → 96.9%**, and the count of
   pairs carried by the embedder alone falls from 20 to **zero**. Only Arabic is
