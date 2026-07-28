@@ -179,10 +179,24 @@ Then, from the cached split:
    document id or its session key), and `content_date` (the document
    `timestamp`) where present.
 2. **Retrieve.** Read `queries.json.gz`. For each query, `POST
-   /v1/vaults/default/search` with the query text, `limit`, and `wing` set to
-   the query's `user_id`. **Scoping by wing is not optional** — it is AMB's
-   isolation unit, and omitting it lets one conversation answer another's
+   /v1/vaults/default/search` with the query text, `limit` = **`k`**, and `wing`
+   set to the query's `user_id`. **Scoping by wing is not optional** — it is
+   AMB's isolation unit, and omitting it lets one conversation answer another's
    questions.
+
+   **`k` defaults to 10** — that is the signature in `memory/base.py`, and it is
+   the value a faithful run uses. Raising it is a legitimate experiment but it
+   is no longer AMB's configuration, so say so in the report.
+
+   Before choosing `k`, work out **what fraction of one isolation unit it
+   actually returns**: divide the drawer count by the number of units. On
+   `locomo10` the corpus is ~876 drawers over 10 conversations, so ~88 per
+   conversation — meaning `k=10` is 11% of a conversation and `k=30` is **34%**.
+   At a third of the conversation in context, the exercise stops measuring
+   retrieval and starts measuring reading comprehension, and the score rises for
+   a reason that has nothing to do with the memory layer. This is not
+   hypothetical: a run here at `k=30` scored 94.4% and the number was
+   uninterpretable because of it.
 3. **Emit** one JSONL row per query carrying: query id, category, question,
    gold answers, `query_timestamp`, and the retrieved context.
 
@@ -198,6 +212,32 @@ file the answerer was given, which would have voided the run.
 
 Use the workflow tool. Batch the queries (20 per agent is comfortable) and
 pipeline them, so a batch is judged as soon as it is answered.
+
+### Pin the model, for both roles
+
+Run **the latest Sonnet** — at time of writing Sonnet 5, `claude-sonnet-5`,
+which the workflow tool selects as `model: 'sonnet'`. Set it explicitly on the
+answer agent *and* the judge agent. Do not let either inherit whatever model the
+session happens to be running.
+
+Three reasons, and the first is the one that matters:
+
+* **A run whose model tier drifts is not comparable to the previous run.**
+  Inheriting the session model means the benchmark silently re-scores itself
+  whenever someone opens a session on a different model, and two runs a week
+  apart stop meaning the same thing. Pinning is what makes the number a
+  measurement rather than a snapshot of today's configuration.
+* **Tier honesty.** AMB's own reference rows were produced by small, fast hosted
+  models. Answering with a frontier model measures a different system than the
+  rows anyone might compare against, and inflates the result for a reason that
+  has nothing to do with the memory layer.
+* **Throughput.** A full split is ~154 agents. Sonnet finishes a run in a
+  fraction of the wall-clock and tokens a frontier model takes, which is what
+  makes re-running after a configuration change practical rather than a decision.
+
+Record the exact model in the report ([§7](#7-reporting)). If you change it,
+you have changed the benchmark, and no delta against an earlier run is
+attributable to anything else.
 
 **Answer agent** — give it the gold-free batch file only.
 * Use the dataset's own prompt, read from the clone in [§4](#4-read-the-protocol-out-of-the-clone). Do not
@@ -219,8 +259,18 @@ pipeline them, so a batch is judged as soon as it is answered.
 answered batches == judged batches == expected
 answers per batch == batch size, for every batch
 unique query ids answered == unique judged == expected total
+every verdict's id appears in the ANSWER set          <- see below
 abstentions graded correct == 0   (where every query has a gold)
 ```
+
+**A judge asked for N verdicts will pad to N.** Observed here: one answer agent
+returned 19 answers instead of 20, and its judge returned 20 verdicts anyway by
+duplicating an id — a grade for a question nobody had answered. It was 1 of
+1540, so no aggregate check caught it; only reconciling verdict ids against
+answer ids did. Reject any verdict whose id is not in that batch's answer set,
+**count the rejections, and report the count** rather than quietly dropping
+them. Tell the judge explicitly not to pad, and tell the answerer to count the
+lines in its file — but verify anyway, because instructions are not guarantees.
 
 Then read a sample of graded-correct and graded-incorrect pairs. A judge that
 agrees with everything is as broken as one that agrees with nothing, and the
@@ -232,13 +282,16 @@ only way to see either is to look.
 
 Report per category and overall, and state plainly:
 
-* which model answered and which judged;
+* the exact model in each role, by name and version;
+* the retrieval `k`, **and what share of one isolation unit it returned**;
+* how many verdicts were rejected as fabricated, even when that is zero;
+* the rest of the retrieval configuration — wing scoping, result ordering,
+  chunk size;
+* the ingest shape, because per-turn and per-session drawers are different
+  systems under test;
 * that the numbers are **not comparable** to AMB's published rows, because the
   models differ — and not comparable to any of our earlier runs that used a
-  different answering model, judge, `k`, or ingest granularity;
-* the retrieval configuration (`k`, wing scoping, ordering, chunk size);
-* the ingest shape, because per-turn and per-session drawers are different
-  systems under test.
+  different answering model, judge, `k`, or ingest granularity.
 
 If more than one of those moved between two runs, **no delta in the table is
 attributable to any single one of them.** Say so rather than implying a cause.
