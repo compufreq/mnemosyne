@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — the security model, drawn
+
+- **Three diagrams for the security section**, which was a wall of prose about
+  the one part of the system readers most need to be precise about.
+  `security-levels` puts Sealed and HmacOnly side by side artifact by artifact —
+  content, embeddings, token matrices, PQ artifacts, the fts5 index, metadata,
+  the row tag, the chain entry — and carries the unsealed-metadata inventory.
+  `security-keys` shows HKDF deriving a separate encryption and MAC key per
+  vault, the AAD every blob authenticates, rotation, and recipient-encrypted
+  export. `security-integrity` walks a write, a read and an open, including the
+  anchor reconciliation that separates a crash from a rollback.
+- Each diagram states the boundary rather than implying there isn't one. A
+  running process holds the derived keys, so an operator hosting the engine is
+  inside the boundary; and anyone holding the master key can rewrite history and
+  re-tag it so it verifies. The chain proves the file was not altered *by
+  someone without the key* — external anchoring is what would close that, and it
+  is not built.
+- The section gained four headings, so it now has rail entries; it previously
+  had none.
+- **`build.sh` now re-derives every `<h3>` id and the whole sidebar from the
+  sections**, and fails if a heading and a rail entry disagree. Adding a heading
+  by hand gives it no id and no rail entry and nothing complains — the page just
+  grows a heading nobody can link to. That happened while writing this change,
+  which is why it is now generated rather than maintained.
+
 ## Unreleased — the architecture reference gets a language chapter and a sidebar
 
 - **Three new diagrams covering how the engine handles languages**, which was

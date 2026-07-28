@@ -62,6 +62,63 @@ done
 
 rm -rf .flat
 
+# Re-derive heading ids and the sidebar from the sections themselves.
+#
+# The rail is generated, not written by hand. Adding an <h3> by hand gives it no
+# id and no rail entry, and nothing complains — the page just quietly grows a
+# heading nobody can link to or find. That already happened once.
+python3 - <<'PY'
+import io, re, unicodedata
+
+path = 'index.html'
+doc = io.open(path, encoding='utf-8').read()
+
+def slug(text):
+    text = re.sub(r'<[^>]+>', '', text)
+    text = unicodedata.normalize('NFKD', text)
+    text = re.sub(r'[^a-zA-Z0-9]+', '-', text).strip('-').lower()
+    return re.sub(r'-+', '-', text)[:44]
+
+tree = []
+def visit(m):
+    sid, block = m.group(1), m.group(0)
+    title = re.search(r'<h2 id="h_%s">(.*?)</h2>' % sid, block, re.S).group(1)
+    kids = []
+    def stamp(hm):
+        body = hm.group(2)
+        hid = '%s-%s' % (sid, slug(body))
+        kids.append((hid, re.sub(r'<[^>]+>', '', body)))
+        return '<h3 id="%s">%s</h3>' % (hid, body)
+    block = re.sub(r'<h3(?: id="[^"]*")?>(.*?)</h3>'.replace('(.*?)', '()(.*?)'), stamp, block, flags=re.S)
+    tree.append((sid, re.sub(r'<[^>]+>', '', title), kids))
+    return block
+
+doc = re.sub(r'<section class="doc-section" id="([a-z-]+)".*?</section>', visit, doc, flags=re.S)
+
+nav = ['<nav class="sb-nav" aria-label="Sections"><ol>']
+for sid, title, kids in tree:
+    nav.append('  <li class="sb-sec" data-sec="%s">' % sid)
+    nav.append('    <a class="sb-link" href="#%s">%s</a>' % (sid, title))
+    if kids:
+        nav.append('    <ul class="sb-sub">')
+        for hid, ktitle in kids:
+            nav.append('      <li><a class="sb-sublink" href="#%s">%s</a></li>' % (hid, ktitle))
+        nav.append('    </ul>')
+    nav.append('  </li>')
+nav.append('</ol></nav>')
+
+doc = re.sub(r'<nav class="sb-nav".*?</nav>', '\n'.join(nav), doc, count=1, flags=re.S)
+io.open(path, 'w', encoding='utf-8', newline='\n').write(doc)
+
+# Every heading must be reachable from the rail, and every rail entry must
+# point at something. Either way round is a broken link.
+ids = set(re.findall(r'<h3 id="([^"]+)"', doc))
+refs = set(re.findall(r'class="sb-sublink" href="#([^"]+)"', doc))
+if ids != refs:
+    raise SystemExit('rail and headings disagree: %s' % sorted(ids ^ refs))
+print('rail: %d sections, %d headings' % (len(tree), len(ids)))
+PY
+
 # Refresh every inlined copy in index.html from its source.
 python3 - <<'PY'
 import glob, io, os, re

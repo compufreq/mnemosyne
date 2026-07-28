@@ -295,12 +295,16 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   harnesses (`--features onnx` for model rows; `--skip`/`--limit` sharding)
 - `deploy/observability/` — Prometheus + Alertmanager + Loki + Tempo + Grafana
   stack (see its README.md + RUNBOOK.md)
-- `architecture/` — illustrated architecture reference: seven theme-aware
+- `architecture/` — illustrated architecture reference: ten theme-aware
   SVG diagrams (`diagrams/`), the same as PDF (`pdf/`), and `index.html`
   which inlines them and documents every layer plus all 61
   `MNEMOSYNE_*` variables. **`diagrams/` is the only source; `pdf/` and
   the inlined copies are both DERIVED, and `build.sh` regenerates both
-  — edit an SVG, re-run it, never hand-edit an inlined copy.** librsvg
+  — edit an SVG, re-run it, never hand-edit an inlined copy.** It also
+  re-derives every `<h3>` id and the whole sidebar from the sections,
+  and fails if a heading and a rail entry disagree: a hand-added
+  heading otherwise gets no id and no rail entry and nothing complains
+  (this happened once). librsvg
   has no CSS-variable support, so the PDF pass flattens each `var()` to
   its light fallback; it also needs `fonts-noto-core`/`-cjk` or Thai,
   Han, Kana and Devanagari render as tofu boxes — a defect the browser
