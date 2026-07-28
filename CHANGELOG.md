@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — the architecture reference gets a language chapter and a sidebar
+
+- **Three new diagrams covering how the engine handles languages**, which was
+  the largest undocumented area of the reference: `language-tokens` (the
+  six-stage retrieval fold, then the script-aware split into whole words,
+  bigrams or unigrams), `language-morphology` (language resolved by
+  declaration → script → the drawer's own function words, the five pairwise
+  rules, and what each declaration costs), and `language-dates` (an era marker
+  outranking a declared calendar, field order's four signals, ten calendars,
+  and the two open gaps).
+- **`architecture/index.html` now shows one section at a time behind a
+  sidebar.** Ten sections had become one unnavigable scroll. Paging is added by
+  script (`body.paged`), never in the markup, so with JS off or broken every
+  section stays visible and the document still reads end to end; print does the
+  same. Deep links, back/forward and prev/next all route through one handler.
+- **`build.sh` now regenerates the inlined copies in `index.html` too**, so
+  `diagrams/` is the single source and `pdf/` plus the inlined copies are both
+  derived. This is not tidying — inlining by hand had already reintroduced the
+  bug it prevents. A standalone SVG needs its own dark media query to be
+  readable when opened directly, but **inlined, that block sets `--d-*` on the
+  `svg` element and beats the `:root` values the page sets**, so the diagram
+  follows the system theme while the page follows its manual toggle and the two
+  disagree. The build now strips it and *fails* if an inlined copy still has one.
+- **The PDF pass needed CJK and Thai fonts.** Without `fonts-noto-core` and
+  `fonts-noto-cjk`, librsvg renders `พ.ศ.`, `令和`, `๒๐๒๖` and `नमस्ते` as tofu
+  boxes. The browser has those families and the container did not, so this was
+  a defect visible only in the PDF — check a rendered page, never just the SVG.
+- Corrected two things the new diagrams surfaced in existing text. The
+  relevance gate was still documented as `semantic > 0.56`, a fixed number the
+  per-embedder gate had just made false. And the Arabic altitude case
+  (`على ارتفاع ٢٥٠٠م`, which is **2500 metres** and reads as the year 2500) was
+  written up as an accepted trade on the grounds that no string relation
+  separates it from a year — which is wrong. The governing noun `ارتفاع` is
+  right there in the token stream, and a year noun is *already* read as
+  confirming evidence; a measurement noun pointing the other way is the same
+  class of signal and is simply not consulted yet. That is a gap, not a
+  principled refusal, and it is now recorded as one. What would still not be
+  legitimate is a range check on the number — magnitude is not evidence of kind.
+
 ## Unreleased — the relevance gate belongs to the vector space, not to a constant
 
 - **A model embedder used to retire the relevance gate by being installed.**
