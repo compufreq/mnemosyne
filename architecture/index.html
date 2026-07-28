@@ -69,7 +69,9 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 16px; line-height: 1.65;
   }
-  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px 96px; }
+  /* Only the header uses this now, and it must track `.shell` exactly or the
+     title sits on a different left edge from the rail beneath it. */
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px 96px; }
   header { border-bottom: 1px solid var(--line); background: var(--card); margin-bottom: 40px; }
   header .wrap { padding: 40px 24px 32px; }
   h1 { font-size: 30px; line-height: 1.25; margin: 0 0 10px; font-weight: 600; }
@@ -148,10 +150,19 @@
      are shown one at a time with a persistent contents rail. The paging is
      added by script (`body.paged`), never by default: with JS off or broken
      every section stays visible and the document still reads end to end. */
-  .shell { max-width: 1340px; margin: 0 auto; padding: 0 24px 96px;
+  /* Width is set so the CONTENT COLUMN and the prose measure are the same
+     number. `p` carries a 78ch cap from when this was one 1040px column, where
+     it very nearly filled; widening the page without moving it just strands
+     300px beside every paragraph. Sizing the column to the text instead of
+     capping the text inside a wider column keeps the measure honest and leaves
+     no dead band. 1160 − 48 padding − 248 rail − 44 gap = 820px of content. */
+  .shell { max-width: 1160px; margin: 0 auto; padding: 0 24px 96px;
            display: grid; grid-template-columns: 248px minmax(0, 1fr);
            gap: 44px; align-items: start; }
   .content { min-width: 0; }
+  /* The column is now the measure, so the per-element caps would only re-strand
+     what the width above just recovered. */
+  .content p, .content .lede { max-width: none; }
   .content > .doc-section > h2 { margin-top: 0; }
   .sidebar { position: sticky; top: 24px; }
   .sidebar nav { background: var(--card); border: 1px solid var(--line);
