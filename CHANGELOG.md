@@ -2,6 +2,29 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **A corpus that declares nothing now gets 86.4% instead of 62.8%.** Five
+  languages were silently degrading for callers who never set `language`:
+  measured undeclared, Greek 40.8%, Russian 16.7%, Hindi 25.0%, Georgian 33.3%,
+  Korean 80.0% — against 100% each when declared. All five now read **100%
+  undeclared**, and pairs left to the embedder alone fall from 21 to 9.
+  - `morph_lang_by_script` applies a table wherever its own script appears.
+    **This is not the inference the never-guess contract forbids**: deriving a
+    *calendar* from script is forbidden because Thai script writes Gregorian
+    dates constantly, so the script says nothing about the claim. Here it is
+    reversed — a Greek `-ος` ending can only ever match a Greek word, so
+    applying the Greek table asserts nothing the characters do not already say,
+    and applying it to an English corpus costs exactly zero.
+  - **Two of the five are an approximation, and are labelled as one.** Greek,
+    Georgian and Hangul are used by one language apiece, so the mapping is a
+    fact. Cyrillic is also Ukrainian, Bulgarian and Serbian; Devanagari is also
+    Marathi and Nepali. Those two get the majority language's table, whose
+    endings the family largely shares — approximate morphology instead of none,
+    and an ending that is wrong for the corpus simply fails to match.
+  - `suffix_family` is deliberately **not** widened. Its endings are Latin, and
+    Latin is exactly the case no script can settle: German needs `-er`, English
+    cannot have it. The eight Latin-script languages still require the
+    declaration, and that is irreducible rather than unfinished.
+
 - **Arabic reaches 100%, and so does every other language: 191/191.**
   Eight Arabic suppletives and irregular plurals join `IRREGULAR` — `امرأة`/`نساء`
   (م-ر-أ against ن-س-و), `إنسان`/`ناس`, `فم`/`أفواه`, `أخ`/`إخوة`. Their plural is
