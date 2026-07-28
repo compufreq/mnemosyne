@@ -13,5 +13,6 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 unicode-normalization = { workspace = true }
+calendrical_calculations = { workspace = true }
 time = { workspace = true }
 thiserror = { workspace = true }

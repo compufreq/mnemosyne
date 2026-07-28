@@ -49,8 +49,56 @@
 //!   anchor's time, and the anchor is a `Date` — `parse_anchor` reduces the
 //!   timestamp to its local day.
 //! * **Non-English text.** Month names, weekday names, "ago" and the number
-//!   words are English only, so a non-English drawer yields no mentions.
-//!   Non-Gregorian calendars are not represented.
+//!   words are English only, so a non-English drawer yields no mentions
+//!   unless `Locale::ARABIC` is asked for.
+//! * **Ambiguous numeric dates resolve by convention, not by evidence.**
+//!   `05/07/2023` is 5 July or 7 May and the token does not say. Four signals
+//!   are consulted in order: a `date_order` declared on `Locale`; an
+//!   unambiguous date elsewhere in the same text, which is the writer stating
+//!   their convention by example; the language, where it implies one (CLDR
+//!   gives `ar` as `d/M/y` in every Arabic territory, while English splits
+//!   US/Commonwealth and implies nothing); and failing all three, day-first.
+//!   The last is a reading asserted where the text is silent — a US corpus
+//!   that never declares `MonthFirst` reads `07/05` as 7 May — taken because a
+//!   date the reader can see and correct beats one they cannot use.
+//! * **A month NAME joined by hyphens is not read at all.** `-` is a token
+//!   character, which is what makes `2023-05-07` a single token — so
+//!   `٢٠٢٣-أيار-٠٧` arrives as ONE token carrying a month name: the numeric
+//!   readers decline it for not being all digits, and the month-name arm
+//!   never sees `أيار` alone. Isolated against both variables — separator and
+//!   field order — the separator is what does it, and it does it in **both**
+//!   languages:
+//!
+//!   ```text
+//!   ٧ أيار ٢٠٢٣     -> 2023-05-07      07-May-2023 -> nothing
+//!   ٠٧-أيار-٢٠٢٣    -> nothing         2023-May-07 -> nothing
+//!   ```
+//!
+//!   Closing it means splitting a mixed token, which is a tokenizer change
+//!   and moves every offset in both scanners.
+//! * **A month name written year-first strands its numbers.** Separate and
+//!   milder than the hyphen case, and found by isolating it: with spaces,
+//!   `٢٠٢٣ أيار ٠٧` records `أيار` as a bare month and leaves it
+//!   **unresolved** rather than yielding nothing. The month-name arm looks
+//!   for the day before the name and the year after — the shape
+//!   `٧ أيار ٢٠٢٣` has — so a year-first ordering is seen but not assembled.
+//!   Visible to a caller as an unresolved mention, which is the honest
+//!   failure, but it is a failure.
+//! * **Non-Gregorian calendars are declared, not detected.** `Locale` carries
+//!   a [`Calendar`]; Buddhist, Minguo, Hijri (Umm al-Qura) and Jalali all
+//!   convert. Nothing is inferred from the text: script is not evidence
+//!   (Thai script writes Gregorian constantly) and neither is the numeral
+//!   system (`๒๐๒๖` is an ordinary Gregorian 2026 in Thai digits, and reading
+//!   the glyphs as an era claim resolved it to 1483). An undeclared corpus
+//!   reads years as written, so a Thai date reads 543 years high until someone
+//!   says the calendar — visible and correctable, where a dropped date is
+//!   neither.
+//! * **Era markers written in the text are not read yet** — `พ.ศ.`, `ค.ศ.`,
+//!   `هـ`, `م`, 令和, 民國. These would outrank a declared calendar, being the
+//!   writer's own statement about a specific date rather than the caller's
+//!   about a corpus. Attached forms (`1447هـ`, `令和7年`, `2568พ.ศ.`) arrive as
+//!   ONE token because `tokens` keeps alphanumerics together, so reading them
+//!   needs the same tokenizer split as the hyphen-joined month name above.
 //! * **"Next Friday" said on a Wednesday** resolves to the coming Friday.
 //!   Speakers who mean the following week's get a wrong date, and nothing in
 //!   the text separates them.
@@ -313,6 +361,144 @@ impl WeekStart {
 pub struct Locale {
     pub language: Language,
     pub week_start: WeekStart,
+    /// Which field a bare numeric date puts first. `07/05/2023` is 7 May or
+    /// 5 July depending on the writer's convention, and no amount of reading
+    /// the text settles it — so it is declared, exactly as `week_start` is.
+    pub date_order: DateOrder,
+    /// Which calendar counted the years. Declared, never inferred: `2566` may
+    /// be Buddhist Era 2566 or the Gregorian year 2566 in a novel.
+    pub calendar: Calendar,
+}
+
+/// Which field a numeric date puts first.
+///
+/// This cannot be derived from `language`: US English is month-first, British
+/// and Commonwealth English is day-first, and both are `Language::English`.
+/// The same is true of `week_start`, which is why that is already its own
+/// field rather than a property of the language.
+///
+/// `Undeclared` means the caller did not say, not that the engine gives up. It
+/// falls through to what the text demonstrates about itself, and failing that
+/// to **day-first** — `d/M/y` is the majority convention worldwide and CLDR's
+/// most common pattern, so it is the reading most likely to be right when
+/// nothing else is known.
+///
+/// The cost is explicit: a US corpus that never declares `MonthFirst` reads
+/// `07/05` as 7 May. That is a real error for those users, taken deliberately
+/// because a resolved date they can see and correct beats an unresolved one
+/// they cannot use — and because an unambiguous date anywhere in the same
+/// drawer overrides the default before it ever applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateOrder {
+    #[default]
+    Undeclared,
+    /// `d/M/y` — most of the world, per CLDR.
+    DayFirst,
+    /// `M/d/y` — the United States.
+    MonthFirst,
+}
+
+/// Which calendar counted a year.
+///
+/// Declared by the caller at read time, never inferred from the text. Script
+/// is not evidence — Thai script writes Gregorian dates constantly — and the
+/// numeral system is not evidence either: `๒๐๒๖` is an ordinary Gregorian 2026
+/// typed in Thai digits, and treating the glyphs as an era claim resolved it
+/// to 1483.
+///
+/// Only the calendars whose conversion is exact arithmetic are here. A
+/// renumbered year is all Buddhist and Minguo are: same months, same lengths,
+/// same leap rule, a different count. Hijri is lunar and drifts about eleven
+/// days a year, and Jalali turns at the vernal equinox with different month
+/// lengths — neither is reachable by subtracting a constant, so neither is
+/// offered rather than being offered wrongly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Calendar {
+    /// Read years as written.
+    #[default]
+    Gregorian,
+    /// Thai solar Buddhist Era: `y - 543`. Constant from 1941, when Thailand
+    /// moved new year to 1 January; January-to-March dates before that carry
+    /// 542, which matters for a historical corpus and not for a memory.
+    Buddhist,
+    /// Republic of China / Taiwan: `y + 1911`.
+    Minguo,
+    /// Islamic Hijri, Umm al-Qura — the Saudi CIVIL calendar, the one printed
+    /// on documents. Lunar: a year is about eleven days shorter than a solar
+    /// one, so no offset reaches it and the whole date must be converted.
+    /// Deliberately this variant and not the tabular one, which is the easy
+    /// implementation and diverges from what real documents say.
+    Hijri,
+    /// Solar Hijri / Jalali, as used in Iran and Afghanistan. Solar, but the
+    /// year turns at the vernal equinox and the month lengths differ, so again
+    /// the whole date converts rather than the year shifting.
+    Jalali,
+}
+
+/// A day number from `calendrical_calculations` as a `time::Date`.
+///
+/// `RataDie` counts days from 1 January 1 CE, so the bridge is one known
+/// anchor and no magic constant: RataDie 1 IS that day.
+fn date_from_rata_die(rd: calendrical_calculations::rata_die::RataDie) -> Option<Date> {
+    let epoch = Date::from_calendar_date(1, Month::January, 1)
+        .ok()?
+        .to_julian_day();
+    let jd = i32::try_from(rd.to_i64_date().checked_sub(1)?)
+        .ok()?
+        .checked_add(epoch)?;
+    Date::from_julian_day(jd).ok()
+}
+
+impl Calendar {
+    /// The Gregorian date that `(y, m, d)` names in this calendar.
+    ///
+    /// A whole date, not a year: Buddhist and Minguo only renumber the year and
+    /// could have been an offset, but Hijri and Jalali have different month
+    /// lengths, so converting the year and keeping the Gregorian month would
+    /// produce a date neither calendar contains.
+    fn to_gregorian(self, y: i32, m: u8, d: u8) -> Option<Date> {
+        use calendrical_calculations::{islamic, persian};
+        let shifted = |y: i32| Date::from_calendar_date(y, Month::try_from(m).ok()?, d).ok();
+        let date = match self {
+            Calendar::Gregorian => shifted(y)?,
+            Calendar::Buddhist => shifted(y.checked_sub(543)?)?,
+            Calendar::Minguo => shifted(y.checked_add(1911)?)?,
+            Calendar::Hijri => {
+                if !(1..=12).contains(&m) || !(1..=30).contains(&d) {
+                    return None;
+                }
+                date_from_rata_die(islamic::fixed_from_saudi_islamic(y, m, d))?
+            }
+            Calendar::Jalali => {
+                if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+                    return None;
+                }
+                date_from_rata_die(persian::fixed_from_fast_persian(y, m, d))?
+            }
+        };
+        // A date is a date. `time::Date` spans +/-9999 and a memory may hold
+        // a year in a novel, an astronomy note or a century-scale plan, so the
+        // only bound here is what the type can represent.
+        (1..=9999).contains(&date.year()).then_some(date)
+    }
+}
+
+/// Read `(y, m, d)` in the declared calendar, with the module's three answers:
+/// resolved, recorded-but-undecided, or not a date.
+fn read_date(cal: Calendar, y: i32, m: u8, d: u8) -> Option<Option<Date>> {
+    // A DECLARED calendar numbers its own years, and the four-digit test is a
+    // Gregorian assumption: Minguo 114 is 2025 in three digits and Japanese era
+    // years are one or two. Bound those only by the converted result, which
+    // `to_gregorian` checks. This regressed once when the Gregorian horizon was
+    // retired and the guard was left in front of every calendar.
+    if cal == Calendar::Gregorian {
+        if !(1000..=9999).contains(&y) {
+            return None; // a two-digit year names no century; this does not guess one
+        }
+    } else if y < 1 {
+        return None;
+    }
+    Some(cal.to_gregorian(y, m, d))
 }
 
 /// Languages whose temporal expressions this module can read.
@@ -333,15 +519,36 @@ impl Locale {
     pub const ENGLISH: Locale = Locale {
         language: Language::English,
         week_start: WeekStart::Monday,
+        date_order: DateOrder::Undeclared,
+        calendar: Calendar::Gregorian,
     };
-    /// Arabic with Saturday weeks — the convention across most of the region.
+    /// Arabic with Saturday weeks and day-first dates — the conventions
+    /// across most of the region.
+    ///
+    /// `date_order` is `DayFirst` here and `Undeclared` for English, and the
+    /// asymmetry is a fact rather than a preference: CLDR gives `ar` as
+    /// `d/M/y` in every Arabic territory, so day-first follows from the
+    /// language. English splits — US month-first, Commonwealth day-first, both
+    /// `Language::English` — so nothing follows from it and the caller has to
+    /// say. Defaulting English either way would resolve half the world's dates
+    /// wrong instead of recording them.
     pub const ARABIC: Locale = Locale {
         language: Language::Arabic,
         week_start: WeekStart::Saturday,
+        date_order: DateOrder::DayFirst,
+        calendar: Calendar::Gregorian,
     };
 
     pub fn with_week_start(self, week_start: WeekStart) -> Self {
         Self { week_start, ..self }
+    }
+
+    pub fn with_date_order(self, date_order: DateOrder) -> Self {
+        Self { date_order, ..self }
+    }
+
+    pub fn with_calendar(self, calendar: Calendar) -> Self {
+        Self { calendar, ..self }
     }
 }
 
@@ -558,19 +765,16 @@ fn tokens(text: &str) -> Vec<(usize, String)> {
 }
 
 /// Parse a bare `YYYY-MM-DD` (or `YYYY/MM/DD`) token.
-fn iso_token(tok: &str) -> Option<Date> {
+fn iso_token(tok: &str, cal: Calendar) -> Option<Option<Date>> {
     let t = tok.replace('/', "-");
     let mut it = t.split('-');
-    let y: i32 = it.next()?.parse().ok()?;
-    if !(1000..=9999).contains(&y) {
-        return None;
-    }
-    let m: u8 = it.next()?.parse().ok()?;
-    let d: u8 = it.next()?.parse().ok()?;
+    let y: i32 = ascii_digits(it.next()?)?.parse().ok()?;
+    let m: u8 = ascii_digits(it.next()?)?.parse().ok()?;
+    let d: u8 = ascii_digits(it.next()?)?.parse().ok()?;
     if it.next().is_some() {
         return None;
     }
-    Date::from_calendar_date(y, Month::try_from(m).ok()?, d).ok()
+    read_date(cal, y, m, d)
 }
 
 /// Whether a month name written at byte offset `off` is being used as a month
@@ -609,16 +813,80 @@ fn month_name_is_deliberate(text: &str, off: usize) -> bool {
 /// so this never half-converts a mixed token. Without it `"٣ أيام"` is
 /// invisible: `str::parse` accepts ASCII only, so a perfectly ordinary Arabic
 /// count silently fails to be a count.
+/// The field order a text demonstrates about itself.
+///
+/// A numeric date whose day exceeds twelve can only be read one way, and that
+/// reading is the writer's convention stated by example. `13/05/2023` is
+/// day-first because 13 is not a month; a drawer containing it tells us how to
+/// read `07/05/2023` two sentences later.
+///
+/// This is EVIDENCE, not inference. Nothing is assumed about the writer's
+/// region, script or software — an instance they wrote is read, in the same
+/// text, where only one parse exists. It is the same class of signal as
+/// `month_name_is_deliberate` using capitalisation, and it fails closed: a
+/// text with no unambiguous date yields nothing and the ambiguous ones stay
+/// recorded-and-unresolved.
+///
+/// Contradictory evidence yields nothing rather than a majority vote. A drawer
+/// holding both `13/05/2023` and `05/13/2023` was written by someone
+/// inconsistent or is quoting two sources, and guessing which convention won
+/// is exactly what this module does not do.
+fn order_demonstrated_by(text: &str) -> DateOrder {
+    let (mut day_first, mut month_first) = (false, false);
+    for (_, w) in tokens(text) {
+        let norm = w.replace(['/', '.'], "-");
+        let parts: Vec<&str> = norm.split('-').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let read = |p: &str| -> Option<u8> { ascii_digits(p)?.parse().ok() };
+        let (Some(a), Some(b)) = (read(parts[0]), read(parts[1])) else {
+            continue;
+        };
+        // Only a field that cannot be a month is evidence.
+        if a > 12 && (1..=31).contains(&a) && (1..=12).contains(&b) {
+            day_first = true;
+        } else if b > 12 && (1..=31).contains(&b) && (1..=12).contains(&a) {
+            month_first = true;
+        }
+    }
+    match (day_first, month_first) {
+        (true, false) => DateOrder::DayFirst,
+        (false, true) => DateOrder::MonthFirst,
+        // None, or both — say nothing.
+        _ => DateOrder::Undeclared,
+    }
+}
+
+/// A token's digits rewritten as ASCII, or `None` if it is not all digits.
+///
+/// The digit system is a NUMERAL SYSTEM and nothing more. An earlier version of
+/// this carried an "era offset" keyed on the Thai block, on the reasoning that
+/// Thai numerals mean the Buddhist Era — and `๒๐๒๖`, which is simply how a Thai
+/// writer types the Gregorian year 2026, resolved to 1483. Which calendar
+/// counted a year is declared on [`Locale`], never read off the glyphs.
+///
+/// Every entry was checked for the ten-code-point property AND for what follows
+/// the run, so a neighbouring non-digit cannot be admitted: U+0660 is followed
+/// by U+066A, U+0966 by U+0970, U+0E50 by U+0E5A. Ethiopic is deliberately
+/// absent — U+1369 is ONE, not zero, and the system is not positional. CJK
+/// ideographic and Roman numerals likewise.
 fn ascii_digits(tok: &str) -> Option<String> {
+    const DIGIT_ZEROS: [u32; 7] = [
+        '0' as u32, 0x0660, // Arabic-Indic
+        0x06F0, // Extended Arabic-Indic (Persian, Urdu)
+        0x0966, // Devanagari
+        0x09E6, // Bengali
+        0x0E50, // Thai
+        0xFF10, // Fullwidth
+    ];
     let mut out = String::with_capacity(tok.len());
     for c in tok.chars() {
-        let d = match c {
-            '0'..='9' => c,
-            '\u{0660}'..='\u{0669}' => char::from(b'0' + (c as u32 - 0x0660) as u8),
-            '\u{06F0}'..='\u{06F9}' => char::from(b'0' + (c as u32 - 0x06F0) as u8),
-            _ => return None,
-        };
-        out.push(d);
+        let cp = c as u32;
+        let n = DIGIT_ZEROS
+            .iter()
+            .find_map(|&zero| cp.checked_sub(zero).filter(|n| *n < 10))?;
+        out.push(char::from(b'0' + n as u8));
     }
     (!out.is_empty()).then_some(out)
 }
@@ -730,6 +998,51 @@ const AR_DUALS: [(&str, Unit); 6] = [
     ("عامين", Unit::Year),
     ("يومان", Unit::Day),
 ];
+
+/// A date joined by hyphens or slashes whose middle field is a month NAME —
+/// `2023-May-07`, `07-May-2023`, `٢٠٢٣-أيار-٠٧`, `١٣/أيار/٢٠٢٣`.
+///
+/// These read as nothing at all before this existed, in **both** languages,
+/// because `-` is a token character — which is what makes `2023-05-07` a
+/// single token — so the whole thing arrives as ONE token carrying a month
+/// name: the all-digit readers decline it, and the month-name arms never see
+/// the name on its own. A fully specified, unambiguous date produced silence.
+///
+/// Order is decided the same way `dmy_token` decides it, by what can only be
+/// one thing: a four-digit field is the year, and the remaining field is the
+/// day. Where both outer fields could be years nothing is returned, since
+/// guessing is what this module exists not to do.
+fn named_date_token(
+    tok: &str,
+    month: impl Fn(&str) -> Option<Month>,
+    cal: Calendar,
+) -> Option<Option<Date>> {
+    let parts: Vec<&str> = tok.split(['-', '/']).collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let m = month(parts[1])?;
+    // Read both outer fields RAW. The era belongs to the year alone — applying
+    // it to whichever field happens to share the numerals turns a day of 13
+    // into -530. `iso_token` gets this right by parsing month and day
+    // separately; the same discipline has to hold here.
+    let outer = |p: &str| -> Option<(i32, i32)> {
+        let digits = ascii_digits(p)?;
+        Some((digits.parse::<i32>().ok()?, digits.chars().count() as i32))
+    };
+    let (a, alen) = outer(parts[0])?;
+    let (c, clen) = outer(parts[2])?;
+    let year_first = alen == 4;
+    let year_last = clen == 4;
+    // Subtract the era only from the field chosen as the year.
+    let (raw_y, d) = match (year_first, year_last) {
+        (true, false) => (a, c),
+        (false, true) => (c, a),
+        // Two four-digit fields, or neither: not decidable, so not decided.
+        _ => return None,
+    };
+    read_date(cal, raw_y, m as u8, u8::try_from(d).ok()?)
+}
 
 /// Whether an [`AR_AGO`] marker at byte offset `off` is putting what follows
 /// into the past, or is the ordinary preposition it also is.
@@ -967,28 +1280,42 @@ pub fn resolve_claimed_span_with(
 /// * `None` — neither reading is a date, so this is not one.
 ///
 /// Two-digit years are not read at all; the century is not in the token.
-fn dmy_token(tok: &str) -> Option<Option<Date>> {
+fn dmy_token(tok: &str, cal: Calendar, order: DateOrder) -> Option<Option<Date>> {
     let norm = tok.replace(['/', '.'], "-");
     let parts: Vec<&str> = norm.split('-').collect();
     if parts.len() != 3 {
         return None;
     }
-    let year: i32 = parts[2]
-        .parse()
-        .ok()
-        .filter(|y| (1000..=9999).contains(y))?;
-    let (a, b): (u8, u8) = (parts[0].parse().ok()?, parts[1].parse().ok()?);
-    // `Month::try_from` rejects anything over twelve, which is exactly the
-    // test that decides the order.
-    let day_first = Month::try_from(b)
-        .ok()
-        .and_then(|m| Date::from_calendar_date(year, m, a).ok());
-    let month_first = Month::try_from(a)
-        .ok()
-        .and_then(|m| Date::from_calendar_date(year, m, b).ok());
+    let year: i32 = ascii_digits(parts[2])?.parse().ok()?;
+    let (a, b): (u8, u8) = (
+        ascii_digits(parts[0])?.parse().ok()?,
+        ascii_digits(parts[1])?.parse().ok()?,
+    );
+    // A year with no era declared is recorded unresolved whatever the field
+    // order — the order cannot rescue a year we cannot place.
+    if matches!(read_date(cal, year, 1, 1), Some(None)) {
+        return (1..=31).contains(&a).then_some(None);
+    }
+    // Read both orders through the DECLARED calendar, so a Hijri or Jalali
+    // corpus gets its own month lengths rather than Gregorian ones.
+    // `Month::try_from` rejecting anything over twelve is what decides the
+    // order when only one reading is a date.
+    let day_first = read_date(cal, year, b, a).flatten();
+    let month_first = read_date(cal, year, a, b).flatten();
     match (day_first, month_first) {
         (Some(d), None) | (None, Some(d)) => Some(Some(d)),
-        (Some(_), Some(_)) => Some(None),
+        // Both readings are real dates. A DECLARED order settles it — the
+        // caller has already told us the convention, and refusing to use it
+        // discards information they supplied. Undeclared stays recorded and
+        // unresolved: `07/05/2023` is 7 May or 5 July and the text does not say.
+        (Some(df), Some(mf)) => Some(Some(match order {
+            DateOrder::MonthFirst => mf,
+            // The scanners never pass `Undeclared` — they resolve it to the
+            // demonstrated order or to day-first before calling. Reading it as
+            // day-first here keeps a direct caller consistent with them rather
+            // than silently refusing.
+            DateOrder::DayFirst | DateOrder::Undeclared => df,
+        })),
         (None, None) => None,
     }
 }
@@ -1025,8 +1352,8 @@ pub fn extract_time_mentions_in(
     locale: Locale,
 ) -> Vec<TimeMention> {
     match locale.language {
-        Language::English => scan_english(text, anchor, locale.week_start),
-        Language::Arabic => scan_arabic(text, anchor, locale.week_start),
+        Language::English => scan_english(text, anchor, locale),
+        Language::Arabic => scan_arabic(text, anchor, locale),
     }
 }
 
@@ -1046,7 +1373,17 @@ pub fn extract_time_mentions_in(
 /// Tokens are compared in canonical form, so أ written as one code point or as
 /// alef plus a combining hamza both match. Offsets stay relative to the
 /// original text.
-fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMention> {
+fn scan_arabic(text: &str, anchor: Option<Date>, loc: Locale) -> Vec<TimeMention> {
+    let ws = loc.week_start;
+    // Precedence: what the caller declared, else what the text demonstrates
+    // about itself, else the world's majority convention.
+    let order = match loc.date_order {
+        DateOrder::Undeclared => match order_demonstrated_by(text) {
+            DateOrder::Undeclared => DateOrder::DayFirst,
+            demonstrated => demonstrated,
+        },
+        declared => declared,
+    };
     let raw = tokens(text);
     // Compare canonically; report offsets from the untouched text.
     let toks: Vec<(usize, String)> = raw
@@ -1072,9 +1409,11 @@ fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMenti
 
         // Language-neutral numeric forms first — a date written 2023-05-07 is
         // the same date in any prose around it.
-        if let Some(d) = iso_token(w) {
-            mention = Some((TimeKind::Absolute, Some(point(d))));
-        } else if let Some(resolved) = dmy_token(w) {
+        if let Some(d) = named_date_token(w, ar_month, loc.calendar) {
+            mention = Some((TimeKind::Absolute, d.map(point)));
+        } else if let Some(d) = iso_token(w, loc.calendar) {
+            mention = Some((TimeKind::Absolute, d.map(point)));
+        } else if let Some(resolved) = dmy_token(w, loc.calendar, order) {
             mention = Some((TimeKind::Absolute, resolved.map(point)));
         } else if let Some(month) = ar_month(w).or_else(|| {
             // Two-word Levantine names: كانون الثاني, تشرين الأول.
@@ -1219,7 +1558,17 @@ fn scan_arabic(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMenti
     out
 }
 
-fn scan_english(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMention> {
+fn scan_english(text: &str, anchor: Option<Date>, loc: Locale) -> Vec<TimeMention> {
+    let ws = loc.week_start;
+    // Precedence: what the caller declared, else what the text demonstrates
+    // about itself, else the world's majority convention.
+    let order = match loc.date_order {
+        DateOrder::Undeclared => match order_demonstrated_by(text) {
+            DateOrder::Undeclared => DateOrder::DayFirst,
+            demonstrated => demonstrated,
+        },
+        declared => declared,
+    };
     let toks = tokens(text);
     let mut out: Vec<TimeMention> = Vec::new();
     let mut i = 0usize;
@@ -1242,9 +1591,11 @@ fn scan_english(text: &str, anchor: Option<Date>, ws: WeekStart) -> Vec<TimeMent
         // resolvable", which stays distinct from "resolved to one day".
         let mut mention: Option<(TimeKind, Option<(Date, Date)>)> = None;
 
-        if let Some(d) = iso_token(w) {
-            mention = Some((TimeKind::Absolute, Some(point(d))));
-        } else if let Some(resolved) = dmy_token(w) {
+        if let Some(d) = named_date_token(w, month_of, loc.calendar) {
+            mention = Some((TimeKind::Absolute, d.map(point)));
+        } else if let Some(d) = iso_token(w, loc.calendar) {
+            mention = Some((TimeKind::Absolute, d.map(point)));
+        } else if let Some(resolved) = dmy_token(w, loc.calendar, order) {
             mention = Some((TimeKind::Absolute, resolved.map(point)));
         } else if let Some(month) = month_of(w) {
             // "May 7, 2023" / "May 2023" / "May 7"
@@ -1572,6 +1923,330 @@ mod tests {
         assert_eq!(m[0].resolved.as_deref(), Some("2023-04-08"));
     }
 
+    /// A numeric date is a date in any digit system — and the digit system is
+    /// what says which era counted the year.
+    ///
+    /// `iso_token` used `str::parse`, which is ASCII-only, so a date written
+    /// in Arabic-Indic numerals was unread *even under* `Language::Arabic` —
+    /// the numeric channel was closed to exactly the languages whose
+    /// word-forms this module also cannot read.
+    #[test]
+    fn a_numeric_date_reads_in_any_digit_system() {
+        // Arabic-Indic and Persian: Gregorian, no era shift.
+        assert_eq!(
+            iso_token("٢٠٢٣-٠٥-٠٧", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2023, Month::May, 7).ok())
+        );
+        assert_eq!(
+            iso_token("۲۰۲۳-۰۵-۰۷", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2023, Month::May, 7).ok())
+        );
+        // Devanagari and fullwidth.
+        assert_eq!(
+            iso_token("२०२३-०५-०७", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2023, Month::May, 7).ok())
+        );
+        assert_eq!(
+            iso_token("２０２３-０５-０７", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2023, Month::May, 7).ok())
+        );
+        // ASCII is unchanged.
+        assert_eq!(
+            iso_token("2023-05-07", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2023, Month::May, 7).ok())
+        );
+        // Day-first forms too. 13 cannot be a month, which is what decides
+        // the order — so this one resolves.
+        assert_eq!(
+            dmy_token("١٣/٠٥/٢٠٢٣", Calendar::Gregorian, DateOrder::Undeclared),
+            Some(Date::from_calendar_date(2023, Month::May, 13).ok())
+        );
+        // ٠٧/٠٥ reads as 7 May or 5 July. A direct caller passing `Undeclared`
+        // gets day-first, matching what the scanners resolve it to — see
+        // `DateOrder`. Declaring `MonthFirst` is how the other reading is had.
+        assert_eq!(
+            dmy_token("٠٧/٠٥/٢٠٢٣", Calendar::Gregorian, DateOrder::Undeclared),
+            Some(Some(Date::from_calendar_date(2023, Month::May, 7).unwrap()))
+        );
+        assert_eq!(
+            dmy_token("٠٧/٠٥/٢٠٢٣", Calendar::Gregorian, DateOrder::MonthFirst),
+            Some(Some(
+                Date::from_calendar_date(2023, Month::July, 5).unwrap()
+            ))
+        );
+        // `iso_token` reads all-digit tokens only, so a hyphen-joined month
+        // NAME is not its business. Recording it here because the scanner as a
+        // whole does not read that form either — measured: ٢٠٢٣-أيار-٠٧ yields
+        // NOTHING, while ٧ أيار ٢٠٢٣ resolves. `-` is a token character (which
+        // is what makes 2023-05-07 one token), so the hyphenated form arrives
+        // as a single token carrying a month name and no arm claims it. That
+        // is a GAP, listed in the module's Known gaps — not a statement that
+        // the form is not a date.
+        assert_eq!(iso_token("٢٠٢٣-أيار-٠٧", Calendar::Gregorian), None);
+        assert!(
+            extract_time_mentions_in("٧ أيار ٢٠٢٣", parse_anchor("2023-05-08"), Locale::ARABIC)
+                .iter()
+                .any(|m| m.resolved.as_deref() == Some("2023-05-07")),
+            "the space-separated month-name form must still read"
+        );
+    }
+
+    /// A far-future year resolves as written. A memory holds the dates in
+    /// someone's fiction, an astronomy note or a century-scale plan.
+    ///
+    /// This bound was 2199 for a while, to stop Thai Buddhist Era 2566 reading
+    /// as the Gregorian year 2566 — the right defence when nothing could tell
+    /// the engine which calendar counted a year. Once [`Calendar`] became a
+    /// declaration it started causing the harm it was built to prevent, so it
+    /// is gone: an undeclared corpus reads years as written, and a Thai corpus
+    /// says so and converts.
+    #[test]
+    fn a_far_future_year_resolves_as_written() {
+        let d = |y, m, day| Date::from_calendar_date(y, m, day).ok();
+        // Ordinary dates, unaffected — the thing that must not regress.
+        assert_eq!(
+            iso_token("2023-05-07", Calendar::Gregorian),
+            Some(d(2023, Month::May, 7))
+        );
+        assert_eq!(
+            iso_token("١٩٩٩-١٢-٣١", Calendar::Gregorian),
+            Some(d(1999, Month::December, 31))
+        );
+        // The novelist's date: resolved, not dropped and not shifted.
+        assert_eq!(
+            iso_token("2566-05-13", Calendar::Gregorian),
+            Some(d(2566, Month::May, 13))
+        );
+        assert_eq!(
+            iso_token("๒๕๖๖-๐๕-๑๓", Calendar::Gregorian),
+            Some(d(2566, Month::May, 13))
+        );
+        // A Gregorian year in Thai numerals is still not shifted.
+        assert_eq!(
+            iso_token("๒๐๒๖-๐๕-๐๗", Calendar::Gregorian),
+            Some(d(2026, Month::May, 7))
+        );
+        // Not a date at all is still None — the distinction a caller needs.
+        assert_eq!(iso_token("hello-world-now", Calendar::Gregorian), None);
+        assert_eq!(
+            iso_token("99-05-13", Calendar::Gregorian),
+            None,
+            "two-digit years unread"
+        );
+    }
+
+    /// A far-future date reaches the caller resolved, not as a bare mention.
+    #[test]
+    fn a_far_future_date_reaches_the_caller_resolved() {
+        let m = extract_time_mentions(
+            "the colony was founded 2566-05-13 exactly",
+            parse_anchor("2023-05-08"),
+        );
+        assert_eq!(m.len(), 1, "the date must be recorded: {m:?}");
+        assert_eq!(m[0].text, "2566-05-13", "verbatim, as written");
+        assert_eq!(m[0].resolved.as_deref(), Some("2566-05-13"), "and resolved");
+    }
+
+    /// Every year reading must agree with every other.
+    ///
+    /// Three sites gated years at 2199 and three at 9999, so
+    /// `iso_token("2566-05-13")` refused while `May 13, 2566` — the same date,
+    /// one screen away — resolved. The constant is gone now; what this pins is
+    /// the invariant that outlived it, since the readers drifting apart is the
+    /// defect, not the particular bound they drifted around.
+    #[test]
+    fn every_reader_agrees_about_the_same_date() {
+        let a = parse_anchor("2023-05-08");
+        let want = Some("2566-05-13");
+        for text in [
+            "2566-05-13",
+            "May 13, 2566",
+            "13 May 2566",
+            "2566-May-13",
+            "13/05/2566",
+        ] {
+            let m = extract_time_mentions(text, a);
+            assert_eq!(m.len(), 1, "{text:?} produced {m:?}");
+            assert_eq!(
+                m[0].resolved.as_deref(),
+                want,
+                "{text:?} disagreed with the others"
+            );
+        }
+        // ...and in Arabic, through its own month-name arm.
+        let m = extract_time_mentions_in("١٣ أيار ٢٥٦٦", a, Locale::ARABIC);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].resolved.as_deref(), want);
+    }
+
+    /// `07/05/2023` is 7 May or 5 July. Four signals can settle it, and the
+    /// engine takes them in order of how much they rest on.
+    #[test]
+    fn the_four_signals_that_settle_a_numeric_date_order() {
+        let a = parse_anchor("2023-05-08");
+        let one = |text: &str, loc: Locale| -> Option<String> {
+            let m = extract_time_mentions_in(text, a, loc);
+            assert_eq!(m.len(), 1, "expected one mention in {text:?}: {m:?}");
+            m[0].resolved.clone()
+        };
+
+        // 1 — DECLARED on the Locale. The caller's assertion, honoured.
+        let us = Locale::ENGLISH.with_date_order(DateOrder::MonthFirst);
+        let gb = Locale::ENGLISH.with_date_order(DateOrder::DayFirst);
+        assert_eq!(one("we met 07/05/2023", us).as_deref(), Some("2023-07-05"));
+        assert_eq!(one("we met 07/05/2023", gb).as_deref(), Some("2023-05-07"));
+
+        // 2 — IMPLIED BY LANGUAGE. CLDR gives `ar` as d/M/y in every Arabic
+        // territory, so day-first follows from the language rather than from a
+        // preference. English splits US/Commonwealth and cannot imply either.
+        assert_eq!(
+            one("التقينا ٠٧/٠٥/٢٠٢٣", Locale::ARABIC).as_deref(),
+            Some("2023-05-07")
+        );
+
+        // 3 — DEMONSTRATED BY THE TEXT. 13 cannot be a month, so the writer
+        // has stated their convention by example, in this drawer.
+        assert_eq!(
+            one("first 13/05/2023", Locale::ENGLISH).as_deref(),
+            Some("2023-05-13"),
+            "an unambiguous date resolves on its own"
+        );
+        let m = extract_time_mentions_in("met 13/05/2023 and again 07/05/2023", a, Locale::ENGLISH);
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert_eq!(
+            m[1].resolved.as_deref(),
+            Some("2023-05-07"),
+            "carried by the writer's own example"
+        );
+        // ...and the same text with month-first evidence reads the other way.
+        let m = extract_time_mentions_in("met 05/13/2023 and again 07/05/2023", a, Locale::ENGLISH);
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert_eq!(m[1].resolved.as_deref(), Some("2023-07-05"));
+
+        // 4 — THE MAJORITY CONVENTION. Nothing declared, nothing demonstrated:
+        // day-first, because `d/M/y` is what most of the world writes.
+        assert_eq!(
+            one("we met 07/05/2023", Locale::ENGLISH).as_deref(),
+            Some("2023-05-07")
+        );
+        // The cost of that default, pinned so it is visible in the suite and
+        // not only in a comment: a US corpus reads 7 May unless it declares.
+        // Layer 2 rescues any drawer containing one unambiguous date.
+        assert_eq!(
+            one("we met 07/05/2023", us).as_deref(),
+            Some("2023-07-05"),
+            "declaring MonthFirst is how a US corpus corrects it"
+        );
+
+        // Contradictory evidence says nothing rather than voting. A drawer
+        // holding both orders was written inconsistently or quotes two sources.
+        assert_eq!(
+            order_demonstrated_by("13/05/2023 and 05/13/2023"),
+            DateOrder::Undeclared
+        );
+        assert_eq!(order_demonstrated_by("13/05/2023"), DateOrder::DayFirst);
+        assert_eq!(order_demonstrated_by("05/13/2023"), DateOrder::MonthFirst);
+        assert_eq!(order_demonstrated_by("07/05/2023"), DateOrder::Undeclared);
+    }
+
+    /// A declared calendar resolves an era the text cannot settle — and is
+    /// honoured even where the raw year would have read as Gregorian, because
+    /// it is the caller's assertion about their own corpus, not an inference.
+    #[test]
+    fn a_declared_calendar_resolves_the_era() {
+        let a = parse_anchor("2023-05-08");
+        let th = Locale::ENGLISH.with_calendar(Calendar::Buddhist);
+        let tw = Locale::ENGLISH.with_calendar(Calendar::Minguo);
+
+        assert_eq!(
+            iso_token("2566-05-13", Calendar::Buddhist),
+            Some(Date::from_calendar_date(2023, Month::May, 13).ok())
+        );
+        assert_eq!(
+            iso_token("0114-01-01", Calendar::Minguo),
+            Some(Date::from_calendar_date(2025, Month::January, 1).ok())
+        );
+        // The declaration applies to every year, including ones that would
+        // have read as Gregorian. The caller said Buddhist; that is the answer.
+        assert_eq!(
+            iso_token("2026-05-07", Calendar::Buddhist),
+            Some(Date::from_calendar_date(1483, Month::May, 7).ok())
+        );
+        // Without a declaration the year reads as written — 2566 CE, which is
+        // right for a novel and 543 years high for an undeclared Thai corpus.
+        // Visible and correctable either way; the declaration is the fix.
+        assert_eq!(
+            iso_token("2566-05-13", Calendar::Gregorian),
+            Some(Date::from_calendar_date(2566, Month::May, 13).ok())
+        );
+
+        let m = extract_time_mentions_in("founded 2566-05-13", a, th);
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-05-13"));
+        let m = extract_time_mentions_in("founded 0114-01-01", a, tw);
+        assert_eq!(m[0].resolved.as_deref(), Some("2025-01-01"));
+    }
+
+    /// Hijri and Jalali are not renumbered Gregorian years, so they convert as
+    /// whole dates through `calendrical_calculations` rather than by an offset.
+    ///
+    /// Nowruz is the load-bearing assertion. Jalali year 1 begins at the vernal
+    /// equinox, so `1404-01-01` must land on 20 or 21 March 2025 — an error in
+    /// the equinox anchor shows up here immediately, where a mid-year date
+    /// would absorb an off-by-one silently.
+    #[test]
+    fn the_calendars_that_need_real_calendar_math() {
+        // --- Jalali / Solar Hijri: Nowruz 1404.
+        let nowruz = iso_token("1404-01-01", Calendar::Jalali)
+            .flatten()
+            .expect("Jalali 1404-01-01 must convert");
+        assert_eq!(nowruz.year(), 2025, "Nowruz 1404 falls in 2025: {nowruz}");
+        assert_eq!(
+            nowruz.month(),
+            Month::March,
+            "at the vernal equinox: {nowruz}"
+        );
+        assert!(
+            (20..=21).contains(&nowruz.day()),
+            "Nowruz is 20 or 21 March, got {nowruz}"
+        );
+        // A month beyond twelve is not a Jalali date.
+        assert_eq!(iso_token("1404-13-01", Calendar::Jalali), Some(None));
+
+        // --- Hijri, Umm al-Qura (the Saudi CIVIL calendar, not the tabular
+        // approximation, which is the easy implementation and diverges from
+        // what real documents say).
+        let hijri = iso_token("1447-01-01", Calendar::Hijri)
+            .flatten()
+            .expect("Hijri 1447-01-01 must convert");
+        // 1 Muharram 1447 falls in mid-2025. A lunar year is ~11 days shorter
+        // than a solar one, so no constant offset reaches this — which is the
+        // whole reason the conversion is delegated.
+        assert_eq!(hijri.year(), 2025, "got {hijri}");
+        // A lunar month never exceeds 30 days.
+        assert_eq!(iso_token("1447-01-31", Calendar::Hijri), Some(None));
+        assert_eq!(iso_token("1447-13-01", Calendar::Hijri), Some(None));
+
+        // Both are reachable end to end through a declared Locale.
+        let fa = Locale::ENGLISH.with_calendar(Calendar::Jalali);
+        let m = extract_time_mentions_in("written 1404-01-01", parse_anchor("2025-03-21"), fa);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert!(m[0]
+            .resolved
+            .as_deref()
+            .is_some_and(|r| r.starts_with("2025-03-2")));
+
+        // And the arithmetic calendars still take the cheap path — no
+        // dependency is consulted for a renumbered year.
+        assert_eq!(
+            iso_token("2566-05-13", Calendar::Buddhist),
+            Some(Date::from_calendar_date(2023, Month::May, 13).ok())
+        );
+        assert_eq!(
+            iso_token("0114-01-01", Calendar::Minguo),
+            Some(Date::from_calendar_date(2025, Month::January, 1).ok())
+        );
+    }
+
     #[test]
     fn arabic_indic_digits_are_digits() {
         assert_eq!(ascii_digits("٣").as_deref(), Some("3"));
@@ -1864,15 +2539,40 @@ mod tests {
     }
 
     /// When both readings are real dates the token does not say which day it
-    /// names. Recording it unresolved keeps the fact that a date is there;
-    /// picking one would be a coin flip reported as a fact.
+    /// names, so something outside the token has to.
+    ///
+    /// This test used to assert the opposite — that such a date is recorded and
+    /// left unresolved, because "picking one would be a coin flip reported as a
+    /// fact". That was a considered position and it is now reversed
+    /// deliberately: a memory that returns no date is unusable, and `d/M/y` is
+    /// not a coin flip but the majority convention worldwide and CLDR's most
+    /// common pattern. It is still a reading asserted where the text is silent,
+    /// which is why the two stronger signals come first — a declaration on
+    /// `Locale`, and any unambiguous date in the same drawer.
     #[test]
-    fn ambiguous_numeric_dates_are_recorded_but_not_resolved() {
+    fn an_ambiguous_numeric_date_takes_the_majority_convention() {
         let m = extract_time_mentions("dated 05/07/2023 exactly", None);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].text, "05/07/2023");
         assert_eq!(m[0].kind, TimeKind::Absolute);
-        assert!(m[0].resolved.is_none(), "{m:?}");
+        assert_eq!(m[0].resolved.as_deref(), Some("2023-07-05"), "day-first");
+        // ...and either stronger signal overrides it.
+        let m = extract_time_mentions_in(
+            "dated 05/07/2023 exactly",
+            None,
+            Locale::ENGLISH.with_date_order(DateOrder::MonthFirst),
+        );
+        assert_eq!(
+            m[0].resolved.as_deref(),
+            Some("2023-05-07"),
+            "declared wins"
+        );
+        let m = extract_time_mentions("on 05/13/2023 and 05/07/2023", None);
+        assert_eq!(
+            m[1].resolved.as_deref(),
+            Some("2023-05-07"),
+            "the writer's own unambiguous date wins"
+        );
     }
 
     #[test]
