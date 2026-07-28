@@ -2,6 +2,39 @@
 
 ## Unreleased — morphology gets the other half of its evidence
 
+- **English reaches its own inflected forms.** Two pairwise rules, neither a
+  stemmer and neither a floor. `suffix_family` asks whether one word is the
+  other plus one ending from a **closed six-item set**, with final-consonant
+  undoubling so `running` reaches `run`. `IRREGULAR` is a table of ~110 forms no
+  rule over letters can relate — English suppletion and strong verbs, irregular
+  plurals, German strong verbs — because `go`/`went` is not a spelling variant
+  of a stem and 58% of all remaining audit drops are exactly this class.
+  - **Shape, not length, is what makes a 3-character stem safe.** Containment at
+    floor 3 asks "does `run` appear anywhere in this word" and answers yes for
+    `brunt`, `prune`, `runway`: measured, mean **33.3** English words per query
+    and **68.5** German, peaking at 1,996. `suffix_family` asks "is this exactly
+    `run` plus one of six endings" and measures **1.08** and **0.98**, bounded at
+    5 links. Unlike a stemmer it builds no equivalence class, so no single bad
+    ending can poison one.
+  - **`-er` is excluded, and it cost German its plurals.** `Kind`/`Kinder` and
+    `Haus`/`Häuser` need it. Enabling it admitted `flow`/`flower`, `tow`/`tower`,
+    `corn`/`corner`, `butt`/`butter` and `cow`/`cower` — five false pairs for
+    two real ones, because English also builds agent nouns with `-er`. One
+    suffix set cannot serve two languages that share a script and disagree; that
+    needs a **language input**, the same wall the containment floor hit. The
+    umlaut would have discriminated (`Häuser` carries one, `flower` cannot) but
+    `search_key` folds it away first, and `Kind`/`Kinder` has none anyway.
+  - **Promiscuity did not catch `-er`; the controls did.** Adding it moved the
+    population figure by **+0.21 links per query** — indistinguishable from
+    safe. The negative controls failed it five times over. A population metric
+    is no more a precision test than a recall metric is.
+  - **A wrong belief, corrected by asserting the channel.** `encrypt`/`encryption`
+    reads as *admitted* in the audit and reaches **no lexical channel at all**:
+    `encrypt` is seven characters, one below `contains_a_long_word`'s floor of
+    eight, so it has only ever been a semantic hit. Every per-language audit
+    percentage mixes lexical and embedder admissions and none of them is a
+    lexical-recall figure.
+
 - **Negative controls, at last.** The 167-pair morphology audit that drove the
   comparison layer contains **no false friends** — every row in it is a true
   relation, so a rule admitting every string pair would score 100% on it. That

@@ -193,7 +193,18 @@ HMAC-SHA256 integrity tags + a tamper-evident audit chain.
   channel each of those would be a *membership* decision; `same_word_family`
   is the reachable half of morphology — nearly-a-prefix, ≥7 shared chars,
   tail ≤3, which excludes the `-tive`/`-tion` class at exactly 6 and cannot
-  reach Russian case or Arabic broken plurals at all. `drawers_fts` is a
+  reach Russian case or Arabic broken plurals at all. `suffix_family` +
+  `IRREGULAR` (~110 forms) admit on `lexical_morph`: SHAPE not length, which is
+  what makes a 3-char stem safe here when floor-3 containment measured 33.3
+  (en) / 68.5 (de) mean links and this measures 1.08 / 0.98, capped at 5. Both
+  are PAIRWISE — a stemmer builds an equivalence class one false friend
+  poisons (`πολύ`/`πόλη` is why Snowball Greek was rejected). **`-er` is
+  excluded and that costs German its plurals** (`Kind`/`Kinder`,
+  `Haus`/`Häuser`): it admits `flow`/`flower`, `corn`/`corner`, `butt`/`butter`
+  — one suffix set cannot serve two languages sharing a script, and that needs
+  a LANGUAGE INPUT, the same wall the containment floor hit. Note promiscuity
+  moved only +0.21 for `-er`, i.e. **the population metric could not see it and
+  the negative controls could**. `drawers_fts` is a
   **standalone** fts5 table over `search_key(content)`, rebuilt on a
   `fts_key_version` mismatch: external-content over raw bytes disagreed with
   folded query terms, and the prefilter is only safe when it finds *nothing*)

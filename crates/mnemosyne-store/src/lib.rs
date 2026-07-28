@@ -2498,6 +2498,216 @@ fn skeleton_with(w: &str, weak: fn(char) -> bool) -> String {
     w.chars().filter(|c| !weak(*c)).collect()
 }
 
+/// The inflectional endings a delimiting-script word may gain, as a CLOSED set.
+///
+/// Deliberately not `-e`: German `Reis` (rice) + `e` is `Reise` (journey), and
+/// that pair is a control. Nothing in the target set needs it.
+///
+/// Deliberately not `-er` either, and that one cost German its plurals.
+/// `Kind`/`Kinder` and `Haus`/`Häuser` need it; measured against the controls,
+/// enabling it admitted `flow`/`flower`, `tow`/`tower`, `corn`/`corner`,
+/// `butt`/`butter` and `cow`/`cower` — five false pairs for two real ones,
+/// because English also builds agent nouns with `-er` and the shorter word is
+/// often not the verb. One suffix set cannot serve two languages that share a
+/// script and disagree, which is the same wall the containment floor hit: it
+/// needs a language input, not a cleverer string rule.
+///
+/// The umlaut would have been the discriminator — `Häuser`, `Bücher`, `Männer`
+/// all carry one and `flower` cannot — but `search_key` folds it away long
+/// before this rule sees the word, and `Kind`/`Kinder` has no umlaut anyway.
+const LATIN_SUFFIXES: &[&str] = &["s", "es", "ed", "ing", "en"];
+
+/// Shortest stem this rule will inflect. Three, because `run`/`running` is the
+/// pair it exists for — and three is safe HERE in a way it is not for
+/// containment, which is the whole point of the shape below.
+const SUFFIX_STEM_FLOOR: usize = 3;
+
+/// One word is the other plus an inflectional ending — `run`/`running`,
+/// `kind`/`kinder`, `haus`/`häuser` (the fold has already made that `hauser`).
+///
+/// **This is not the containment floor, and not a stemmer.** The distinction is
+/// what makes a 3-character stem safe here when floor-3 containment was
+/// catastrophic. Containment asks "does `run` appear ANYWHERE in this word" and
+/// answers yes for `brunt`, `prune`, `grunt`, `runway`; measured, it reached a
+/// mean of 33 English words per query. This asks "is this word exactly `run`
+/// plus one ending from a six-item list", which admits `runs`, `running`,
+/// `runner` and nothing else. And unlike a stemmer it builds no equivalence
+/// class — it answers about two strings, so a bad ending cannot poison a class
+/// the way `πολύ`/`πόλη` poisons Snowball Greek's.
+///
+/// Final-consonant doubling is handled because English requires it: `running`
+/// is `run` + `n` + `ing`, and without the undoubling the pair this rule exists
+/// for does not match.
+fn suffix_family(q: &str, tok: &str) -> bool {
+    let (short, long) = if q.chars().count() <= tok.chars().count() {
+        (q, tok)
+    } else {
+        (tok, q)
+    };
+    if short.chars().count() < SUFFIX_STEM_FLOOR || short == long {
+        return false;
+    }
+    // `run` doubled is `runn`; nothing else the stem could legally become.
+    let doubled = short
+        .chars()
+        .next_back()
+        .map(|c| format!("{short}{c}"))
+        .unwrap_or_default();
+    LATIN_SUFFIXES.iter().any(|suf| {
+        long.strip_suffix(suf)
+            .is_some_and(|stem| stem == short || stem == doubled)
+    })
+}
+
+/// Forms that no rule over letters can relate, listed because they are a closed
+/// class and the alternative is silence.
+///
+/// Suppletion (`go`/`went`) and ablaut (`gehen`/`ging`, `sprechen`/`spricht`)
+/// are not spelling variations of a stem — they are different stems that a
+/// language has bolted into one paradigm. Every string relation the audit
+/// counterfactuals tested reaches exactly none of them, in six unrelated
+/// languages, which is why 58% of all remaining drops sit here.
+///
+/// A table is honest about being a table. It is data, reviewable line by line,
+/// and it creates no equivalence class beyond the pair written down. What it is
+/// NOT is complete: this is the frequent core of English irregular verbs and
+/// plurals plus German strong verbs, not a lexicon, and a form absent from it is
+/// simply not reached.
+const IRREGULAR: &[(&str, &str)] = &[
+    // English — irregular plurals.
+    ("child", "children"),
+    ("man", "men"),
+    ("woman", "women"),
+    ("person", "people"),
+    ("foot", "feet"),
+    ("tooth", "teeth"),
+    ("goose", "geese"),
+    ("mouse", "mice"),
+    ("louse", "lice"),
+    ("ox", "oxen"),
+    // English — suppletive and strong verbs, by frequency.
+    ("go", "went"),
+    ("be", "was"),
+    ("be", "were"),
+    ("am", "was"),
+    ("is", "was"),
+    ("are", "were"),
+    ("do", "did"),
+    ("have", "had"),
+    ("say", "said"),
+    ("make", "made"),
+    ("take", "took"),
+    ("come", "came"),
+    ("see", "saw"),
+    ("know", "knew"),
+    ("get", "got"),
+    ("give", "gave"),
+    ("find", "found"),
+    ("think", "thought"),
+    ("tell", "told"),
+    ("become", "became"),
+    ("leave", "left"),
+    ("feel", "felt"),
+    ("put", "put"),
+    ("bring", "brought"),
+    ("begin", "began"),
+    ("keep", "kept"),
+    ("hold", "held"),
+    ("write", "wrote"),
+    ("stand", "stood"),
+    ("hear", "heard"),
+    ("let", "let"),
+    ("mean", "meant"),
+    ("set", "set"),
+    ("meet", "met"),
+    ("run", "ran"),
+    ("pay", "paid"),
+    ("sit", "sat"),
+    ("speak", "spoke"),
+    ("lie", "lay"),
+    ("lead", "led"),
+    ("read", "read"),
+    ("grow", "grew"),
+    ("lose", "lost"),
+    ("fall", "fell"),
+    ("send", "sent"),
+    ("build", "built"),
+    ("understand", "understood"),
+    ("draw", "drew"),
+    ("break", "broke"),
+    ("spend", "spent"),
+    ("buy", "bought"),
+    ("eat", "ate"),
+    ("teach", "taught"),
+    ("catch", "caught"),
+    ("drive", "drove"),
+    ("sell", "sold"),
+    ("choose", "chose"),
+    ("drink", "drank"),
+    ("sing", "sang"),
+    ("swim", "swam"),
+    ("wear", "wore"),
+    ("sleep", "slept"),
+    ("win", "won"),
+    ("forget", "forgot"),
+    ("rise", "rose"),
+    ("throw", "threw"),
+    ("fly", "flew"),
+    ("steal", "stole"),
+    // German — strong verbs, present 3sg and preterite against the infinitive.
+    // The fold has already resolved the umlauts, so these are written as the
+    // fold leaves them.
+    ("gehen", "ging"),
+    ("sprechen", "spricht"),
+    ("sprechen", "sprach"),
+    ("sein", "war"),
+    ("sein", "ist"),
+    ("haben", "hatte"),
+    ("werden", "wurde"),
+    ("werden", "wird"),
+    ("kommen", "kam"),
+    ("nehmen", "nahm"),
+    ("nehmen", "nimmt"),
+    ("geben", "gab"),
+    ("geben", "gibt"),
+    ("sehen", "sah"),
+    ("sehen", "sieht"),
+    ("stehen", "stand"),
+    ("finden", "fand"),
+    ("bleiben", "blieb"),
+    ("heissen", "hiess"),
+    ("essen", "ass"),
+    ("essen", "isst"),
+    ("fahren", "fuhr"),
+    ("fahren", "faehrt"),
+    ("laufen", "lief"),
+    ("lesen", "las"),
+    ("lesen", "liest"),
+    ("schreiben", "schrieb"),
+    ("trinken", "trank"),
+    ("helfen", "half"),
+    ("helfen", "hilft"),
+    ("halten", "hielt"),
+    ("tragen", "trug"),
+    ("schlafen", "schlief"),
+    ("treffen", "traf"),
+    ("denken", "dachte"),
+    ("bringen", "brachte"),
+    ("wissen", "wusste"),
+    ("wissen", "weiss"),
+    ("ziehen", "zog"),
+    ("bitten", "bat"),
+    ("sitzen", "sass"),
+    ("liegen", "lag"),
+];
+
+/// Whether the pair is one the [`IRREGULAR`] table names, in either direction.
+fn irregular_pair(q: &str, tok: &str) -> bool {
+    IRREGULAR
+        .iter()
+        .any(|(a, b)| (*a == q && *b == tok) || (*a == tok && *b == q))
+}
+
 /// Which rule applies to this word, by the script of its characters.
 ///
 /// Returns `None` for mixed-script words and for Han, where a character is
@@ -2621,6 +2831,11 @@ fn morph_relation(q: &str, tok: &str) -> bool {
     // it is not the promiscuity that keeps it off Latin — it is that Latin's
     // false pairs (`conversation`/`conversion`) are the named, documented cost
     // of the rule, and Greek's beneficiaries are nine real paradigm forms.
+    // A named irregular form, and a regular ending on a stem the two share.
+    // Both are pairwise and neither creates a class.
+    if irregular_pair(q, tok) || suffix_family(q, tok) {
+        return true;
+    }
     rule.prefix_family && greek_word_family(q, tok)
 }
 
@@ -6198,6 +6413,15 @@ mod tests {
                     Verdict::Apart,
                     "same_word_family cost",
                 ),
+                // The `-er` hazard. A suffix rule needs `-er` for German
+                // plurals, and English uses `-er` to make an agent noun from a
+                // verb — except where the shorter word is not that verb. These
+                // decide whether ONE Latin suffix set can serve both languages.
+                ("flow", "flower", Verdict::Apart, "-er hazard"),
+                ("tow", "tower", Verdict::Apart, "-er hazard"),
+                ("corn", "corner", Verdict::Apart, "-er hazard"),
+                ("butt", "butter", Verdict::Apart, "-er hazard"),
+                ("cow", "cower", Verdict::Apart, "-er hazard"),
             ],
         },
         Controls {
@@ -6283,6 +6507,75 @@ mod tests {
             ],
         },
     ];
+
+    /// The pairs the suffix rule and the irregular table exist for, measured
+    /// the same way the controls are: end to end, at realistic drawer length,
+    /// on the LEXICAL channel only.
+    ///
+    /// Presence is not the assertion. `hits.retain` admits on `semantic > 0.56`
+    /// independently, so "the drawer came back" would pass with the rules
+    /// deleted — three regressions shipped that way once. This asserts the
+    /// channel.
+    ///
+    /// That distinction immediately corrected a wrong belief while this was
+    /// being written: `encrypt`/`encryption` reads as *admitted* in the audit
+    /// and reaches **no lexical channel at all**. `encrypt` is seven characters,
+    /// one below `contains_a_long_word`'s floor of eight, so the pair has only
+    /// ever been a semantic hit. English's audited 40% is not 40% of lexical
+    /// recall, and neither is any other language's.
+    #[test]
+    fn english_inflection_reaches_its_own_forms() {
+        let filler = [
+            "the kitchen tap dripped all evening and kept me awake",
+            "we walked beside the river until the light faded away",
+            "she bought bread cheese and two bottles of red wine",
+            "the train from the airport was delayed by a whole hour",
+            "my neighbour repainted his fence a bright shade of green",
+            "they argued about the bill and then split it evenly",
+        ];
+        for (query, form, mech) in [
+            ("run", "running", "short stem + doubling"),
+            ("child", "children", "irregular plural"),
+            ("go", "went", "suppletive"),
+            // Already worked, by containment, and must keep working.
+            ("document", "documentation", "additive, 8 chars — the floor"),
+            ("teach", "taught", "irregular verb"),
+            ("foot", "feet", "irregular plural"),
+        ] {
+            let (_d, mut s) = store(SecurityLevel::Sealed);
+            let content = format!("{} {}", form, filler.join(" "));
+            s.upsert(&drawer("w", "r", &content, 0)).unwrap();
+            for (i, f) in filler.iter().enumerate() {
+                s.upsert(&drawer("w", "r", f, i as u32 + 1)).unwrap();
+            }
+            let hits = s.search(query, &SearchOptions::default()).unwrap();
+            let lexical = hits
+                .iter()
+                .find(|h| h.drawer.content == content)
+                .map(|h| (h.lexical_exact, h.lexical_morph))
+                .unwrap_or((0.0, 0.0));
+            assert!(
+                lexical.0 > 0.0 || lexical.1 > 0.0,
+                "{query} / {form} ({mech}) reached no LEXICAL channel — \
+                 exact {:.3}, morph {:.3}",
+                lexical.0,
+                lexical.1
+            );
+        }
+    }
+
+    /// German keeps its strong verbs and loses its plurals, and the reason is
+    /// recorded rather than glossed: `Kind`/`Kinder` and `Haus`/`Häuser` need
+    /// `-er`, which English cannot have. See [`LATIN_SUFFIXES`].
+    #[test]
+    fn german_strong_verbs_reach_but_the_plurals_do_not() {
+        assert!(irregular_pair("gehen", "ging"));
+        assert!(irregular_pair("sprechen", "spricht"));
+        // The recorded gap. Both would pass with `-er` in the suffix set, and
+        // five English controls would fail with it.
+        assert!(!suffix_family("kind", "kinder"), "needs a language input");
+        assert!(!suffix_family("haus", "hauser"), "needs a language input");
+    }
 
     #[test]
     fn false_friends_stay_apart() {
@@ -6442,6 +6735,34 @@ mod tests {
                     } else {
                         q.contains(w)
                     }
+            });
+        }
+    }
+
+    #[test]
+    #[ignore = "measurement, needs testdata/*_50k.txt"]
+    fn measure_suffix_family_promiscuity() {
+        for (lang, file) in [("ENGLISH", "en"), ("GERMAN", "de")] {
+            let v = load_words(&format!("testdata/{file}_50k.txt"), latin_char);
+            let q: Vec<String> = v.iter().take(500).cloned().collect();
+            println!("
+=== {lang} (vocab {}) ===", v.len());
+            report("shipped containment floor 8", &q, &v, |a, b| {
+                let (an, bn) = (a.chars().count(), b.chars().count());
+                an.min(bn) >= 8 && if an <= bn { b.contains(a) } else { a.contains(b) }
+            });
+            report("NEW suffix_family", &q, &v, |a, b| suffix_family(a, b));
+            report("suffix_family WITH -er", &q, &v, |a, b| {
+                let (s, l) = if a.chars().count() <= b.chars().count() { (a, b) } else { (b, a) };
+                if s.chars().count() < 3 || s == l { return false; }
+                let d = s.chars().next_back().map(|c| format!("{s}{c}")).unwrap_or_default();
+                ["s", "es", "ed", "ing", "en", "er"].iter().any(|x| {
+                    l.strip_suffix(x).is_some_and(|st| st == s || st == d)
+                })
+            });
+            report("containment floor 3 (the reverted one)", &q, &v, |a, b| {
+                let (an, bn) = (a.chars().count(), b.chars().count());
+                an.min(bn) >= 3 && if an <= bn { b.contains(a) } else { a.contains(b) }
             });
         }
     }
