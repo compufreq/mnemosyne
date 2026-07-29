@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — gold evidence, measured where the reader actually reads
+
+- **`mnemosyne-bench locomo` reports gold-evidence recall at turn
+  granularity**, alongside the session-level row it has always printed, and
+  still without a single model call — the evidence ids ship with the dataset.
+  The historical row asks whether a gold *session* appears among the top-k
+  rooms; the new one asks whether the gold *turn* is inside the k drawers a
+  reader is handed. Measured over all ten conversations at `k=10`: session
+  **any 95.6% / all 87.3%**, turn **any 84.3% / all 74.4%**. Session presence
+  overstates evidence presence by ~13pp, because a session can be "present"
+  on a chunk that says nothing relevant.
+- Coverage is an interval test over byte ranges in the ingested body, not a
+  substring search. Ingest windows 800-byte chunks with 100 bytes of overlap
+  over a session that is one long paragraph, so turns land across boundaries
+  routinely; testing each chunk alone would book a miss the reader never
+  suffered, while the union of the returned chunks is exactly what the prompt
+  contains. Gold turns that cannot be located (9 of roughly 2,800) are
+  excluded **and printed**, so the denominator cannot quietly shrink.
+- **Deduplicating candidates by source document is refused, on its own
+  measurement.** The proposal came from 14% of slots holding another chunk of
+  a document already returned; that counts repetition of a document id and
+  never showed the chunk was redundant. Through the new instrument, at the
+  same `k` over the same retrieval: **≤1 slot per document costs −14.9pp** of
+  all-gold turn recall (74.4% → 59.5%), **≤2 costs −1.3pp**, and nothing
+  gains. The loss shrinks monotonically as the cap loosens, which is the
+  signature of a second chunk carrying new evidence rather than a repeat.
+  This is `room_cap`'s −5.6pp for the reason its post-mortem gave: document
+  presence is not the thing, the right chunk is. The counterfactual stays in
+  the harness (`DOC_CAPS`) so the idea gets re-measured, not re-proposed.
+
 ## Unreleased — AMB, run against ourselves without an external API
 
 - **`docs/AMB_REPLICATION.md`** — a procedure for running the Agent Memory

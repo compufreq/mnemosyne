@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::time::Instant;
 
 use mnemosyne_core::Drawer;
-use mnemosyne_store::{PalaceStore, SearchOptions};
+use mnemosyne_store::{PalaceStore, SearchHit, SearchOptions};
 use mnemosyne_vault::{SecurityLevel, VaultManager};
 
 #[derive(Parser)]
@@ -1048,15 +1048,177 @@ impl vs::MemorySystem for NativeSystem {
     }
 }
 
+/// A byte range inside one session's normalized body.
+type Span = (usize, usize);
+
+/// Merge overlapping or touching spans into disjoint intervals, ascending.
+fn merge_spans(mut v: Vec<Span>) -> Vec<Span> {
+    v.sort_unstable();
+    let mut out: Vec<Span> = Vec::with_capacity(v.len());
+    for (s, e) in v {
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// Whether `needle` sits wholly inside one of the merged intervals.
+///
+/// The union, rather than any single chunk, is what a prompt actually shows:
+/// ingest windows an 800-byte chunk with 100 bytes of overlap over a session
+/// body that is one long paragraph, so a turn lands across a boundary
+/// routinely, and the two chunks either side *together* carry the evidence.
+/// Asking each chunk alone would book that as a retrieval miss the reader
+/// never suffered — the exact class of error this instrument exists to stop.
+fn covers(merged: &[Span], needle: Span) -> bool {
+    merged.iter().any(|&(s, e)| s <= needle.0 && needle.1 <= e)
+}
+
+/// Byte ranges of `chunk` inside `body`, scanning forward from `cursor`.
+///
+/// `chunk_text` emits verbatim slices of the body in order, so a rolling scan
+/// is exact and cheap. The cursor advances to each chunk's *start*, not its
+/// end, because consecutive windows overlap. The one chunk that is not a
+/// single slice is the trailing runt, which `chunk_text` merges into its
+/// predecessor with a `\n\n` join — hence pieces, and hence a `Vec`.
+fn locate_chunk(body: &str, chunk: &str, cursor: &mut usize) -> Vec<Span> {
+    let mut out = Vec::new();
+    for piece in chunk.split("\n\n") {
+        let piece = piece.trim();
+        if piece.is_empty() {
+            continue;
+        }
+        let from = (*cursor).min(body.len());
+        if let Some(rel) = body[from..].find(piece) {
+            let s = from + rel;
+            out.push((s, s + piece.len()));
+            *cursor = s;
+        }
+    }
+    out
+}
+
+/// How many of `wanted` gold turns the selected slots actually put in front
+/// of a reader, testing each turn against the union of that session's
+/// selected chunk ranges.
+fn covered_turns(
+    selected: &[&SearchHit],
+    chunk_span: &std::collections::HashMap<String, Vec<Span>>,
+    wanted: &[(&str, Span)],
+) -> usize {
+    let mut by_room: std::collections::HashMap<&str, Vec<Span>> = Default::default();
+    for h in selected {
+        if let Some(spans) = chunk_span.get(&h.drawer.id) {
+            by_room
+                .entry(h.drawer.meta.room.as_str())
+                .or_default()
+                .extend(spans.iter().copied());
+        }
+    }
+    let merged: std::collections::HashMap<&str, Vec<Span>> = by_room
+        .into_iter()
+        .map(|(r, v)| (r, merge_spans(v)))
+        .collect();
+    wanted
+        .iter()
+        .filter(|(room, sp)| merged.get(room).is_some_and(|m| covers(m, *sp)))
+        .count()
+}
+
+/// Per-document caps the gap-2 counterfactual is measured at. `1` is the
+/// strongest form of "one slot per document"; `2` is the softest cap that
+/// still removes anything, so a negative result covers the family rather
+/// than only its extreme.
+const DOC_CAPS: [usize; 2] = [1, 2];
+
+/// Indices of a selection over `hits` that allows at most `cap` slots per
+/// source document, capped at `k` and refilled in score order — the same
+/// soft-cap-then-refill shape `diversify_by_room` gives `room_cap`.
+fn cap_per_document(hits: &[SearchHit], k: usize, cap: usize) -> Vec<usize> {
+    let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut picked: Vec<usize> = Vec::new();
+    for (i, h) in hits.iter().enumerate() {
+        if picked.len() == k {
+            break;
+        }
+        let n = seen.entry(h.drawer.meta.room.as_str()).or_insert(0);
+        if *n < cap {
+            *n += 1;
+            picked.push(i);
+        }
+    }
+    if picked.len() < k {
+        let taken: std::collections::BTreeSet<usize> = picked.iter().copied().collect();
+        for i in 0..hits.len() {
+            if picked.len() == k {
+                break;
+            }
+            if !taken.contains(&i) {
+                picked.push(i);
+            }
+        }
+    }
+    picked.sort_unstable();
+    picked
+}
+
+/// Gold-evidence recall at two granularities, plus the one-slot-per-document
+/// counterfactual.
+///
+/// The row this harness has always printed is `session_any`: at least one gold
+/// *session* somewhere in the top-k rooms. It cannot tell a memory failure
+/// from a reader failure, and it is blind to chunk choice — every gold turn
+/// can be absent from the prompt while the number reads 100%, because the
+/// session is "present" on the strength of a chunk that says nothing relevant.
+/// That blindness is not hypothetical: `room_cap` was adopted on document
+/// presence and measured −5.6pp, and the post-mortem was that the right
+/// *chunk* must be present, not the right document.
+///
+/// The AMB run measured 83.0% all-gold / 94.1% any-gold at session
+/// granularity against 87.6% end-to-end accuracy — 104 of 189 failures had
+/// every required document in context. These fields make that split standing
+/// and reproducible, and they cost no model calls: the evidence ids ship with
+/// the dataset.
+#[derive(Default, Clone, Copy)]
+struct GoldRecall {
+    /// Queries scored at session granularity (the historical denominator).
+    queries: u32,
+    /// ≥1 / every gold session among the top-k distinct rooms.
+    session_any: f32,
+    session_all: f32,
+    /// ≥1 / every gold *turn* inside the top-k slots actually returned.
+    turn_any: f32,
+    turn_all: f32,
+    /// The same two under `cap_per_document`, one entry per [`DOC_CAPS`] —
+    /// what ROADMAP gap 2 would do to the very prompt the reader sees.
+    /// Measured, not assumed.
+    dedup_turn_any: [f32; DOC_CAPS.len()],
+    dedup_turn_all: [f32; DOC_CAPS.len()],
+    /// Slots filled by a document already represented, over slots returned.
+    /// This is the "14% of slots are repeat chunks" figure, re-derived.
+    repeat_slots: u32,
+    slots: u32,
+    /// Gold turns whose text could not be located in the ingested body, and
+    /// the queries that lost *every* gold turn that way and are therefore
+    /// excluded from the turn rows. Reported rather than absorbed: a silent
+    /// drop here would flatter exactly the numbers it touches.
+    unlocatable_turns: u32,
+    /// Denominator for the turn-level rows.
+    turn_queries: u32,
+}
+
 fn locomo_eval(
     samples: &[Value],
     k: usize,
     backend: &str,
-) -> Result<(f32, u32, CategoryScores, PhaseTiming)> {
+) -> Result<(f32, u32, CategoryScores, PhaseTiming, GoldRecall)> {
     let mut recall_sum = 0f32;
     let mut evaluated = 0u32;
     let mut per_cat: CategoryScores = Default::default();
     let mut timing = PhaseTiming::default();
+    let mut gold = GoldRecall::default();
     let total = samples.len();
     // Optional remote ANN accelerator. `local` ⇒ full-scan fusion path.
     let mut index = match backend {
@@ -1075,33 +1237,66 @@ fn locomo_eval(
             fresh_store(SecurityLevel::Sealed)?
         };
         // Ingest: one room per session.
+        //
+        // Alongside it, two maps that make turn-level gold recall possible:
+        // where each dialog turn sits in its session body, and which of that
+        // body each stored chunk covers. Both are byte ranges over the same
+        // normalized string, so "was this turn in the prompt" becomes an
+        // interval test rather than a substring guess.
         let ingest_started = Instant::now();
         let mut n = 1;
+        let mut turn_span: std::collections::HashMap<String, (String, Span)> = Default::default();
+        let mut chunk_span: std::collections::HashMap<String, Vec<Span>> = Default::default();
         while let Some(dialogs) = conv.get(format!("session_{n}")).and_then(Value::as_array) {
-            let text: Vec<String> = dialogs
+            let room = format!("session_{n}");
+            let turns: Vec<(String, String)> = dialogs
                 .iter()
                 .filter_map(|d| {
-                    Some(format!(
+                    let line = format!(
                         "{} said, \"{}\"",
                         d.get("speaker").and_then(Value::as_str).unwrap_or("?"),
                         d.get("text").and_then(Value::as_str)?
-                    ))
+                    );
+                    let id = d
+                        .get("dia_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    Some((id, line))
                 })
                 .collect();
+            let text: Vec<String> = turns.iter().map(|(_, l)| l.clone()).collect();
             let body = mnemosyne_core::normalize_content(&text.join("\n"));
+            // Locate every turn in the body it was ingested into. The scan
+            // rolls forward because turns keep their order; a turn that
+            // normalization reshaped is simply not recorded, and the query
+            // loop counts that rather than treating it as a miss.
+            let mut tcur = 0usize;
+            for (id, line) in &turns {
+                if id.is_empty() {
+                    continue;
+                }
+                let probe = mnemosyne_core::normalize_content(line);
+                let probe = probe.trim();
+                if probe.is_empty() {
+                    continue;
+                }
+                let from = tcur.min(body.len());
+                if let Some(rel) = body[from..].find(probe) {
+                    let s = from + rel;
+                    turn_span.insert(id.clone(), (room.clone(), (s, s + probe.len())));
+                    tcur = s + probe.len();
+                }
+            }
+            let mut ccur = 0usize;
             for (ci, chunk) in
                 mnemosyne_core::chunk_text(&body, mnemosyne_core::ChunkOptions::default())
                     .into_iter()
                     .enumerate()
             {
-                let d = Drawer::new(
-                    "locomo",
-                    &format!("session_{n}"),
-                    chunk,
-                    None,
-                    ci as u32,
-                    "bench",
-                );
+                let spans = locate_chunk(&body, &chunk, &mut ccur);
+                let d = Drawer::new("locomo", &room, chunk, None, ci as u32, "bench");
+                chunk_span.insert(d.id.clone(), spans);
                 store.upsert(&d)?;
             }
             n += 1;
@@ -1168,6 +1363,58 @@ fn locomo_eval(
             };
             recall_sum += recall;
             evaluated += 1;
+
+            // ---- gold-evidence recall: no model calls, ids ship with the
+            // dataset. The session rows restate what the line above scored;
+            // the turn rows say whether the evidence itself was in the
+            // prompt, which is the only one of the two a reader can use.
+            gold.queries += 1;
+            gold.session_any += recall;
+            if correct.iter().all(|c| topk.contains(&c)) {
+                gold.session_all += 1.0;
+            }
+            let slots: Vec<&SearchHit> = hits.iter().take(k).collect();
+            let mut seen_doc: std::collections::BTreeSet<&str> = Default::default();
+            for h in &slots {
+                gold.slots += 1;
+                if !seen_doc.insert(h.drawer.meta.room.as_str()) {
+                    gold.repeat_slots += 1;
+                }
+            }
+            let mut wanted: Vec<(&str, Span)> = Vec::new();
+            for e in &evidence {
+                match turn_span.get(e.as_str()) {
+                    Some((room, sp)) => wanted.push((room.as_str(), *sp)),
+                    None => gold.unlocatable_turns += 1,
+                }
+            }
+            if !wanted.is_empty() {
+                gold.turn_queries += 1;
+                let got = covered_turns(&slots, &chunk_span, &wanted);
+                if got > 0 {
+                    gold.turn_any += 1.0;
+                }
+                if got == wanted.len() {
+                    gold.turn_all += 1.0;
+                }
+                // The gap-2 counterfactual, over the same retrieval: at most
+                // `cap` slots per document, refilled in score order. Same k,
+                // same pool, so any difference is the cap and nothing else.
+                for (ci, cap) in DOC_CAPS.iter().enumerate() {
+                    let dedup: Vec<&SearchHit> = cap_per_document(&hits, k, *cap)
+                        .into_iter()
+                        .map(|i| &hits[i])
+                        .collect();
+                    let dgot = covered_turns(&dedup, &chunk_span, &wanted);
+                    if dgot > 0 {
+                        gold.dedup_turn_any[ci] += 1.0;
+                    }
+                    if dgot == wanted.len() {
+                        gold.dedup_turn_all[ci] += 1.0;
+                    }
+                }
+            }
+
             let cat = qa
                 .get("category")
                 .map(|c| c.to_string().trim_matches('"').to_string())
@@ -1182,7 +1429,7 @@ fn locomo_eval(
             100.0 * recall_sum / evaluated.max(1) as f32
         );
     }
-    Ok((recall_sum, evaluated, per_cat, timing))
+    Ok((recall_sum, evaluated, per_cat, timing, gold))
 }
 
 /// One session-recall pass over a conversation's QA against the current
@@ -2293,7 +2540,7 @@ fn main() -> Result<()> {
             let start = skip.min(total);
             let end = limit.map(|l| (start + l).min(total)).unwrap_or(total);
             let shard = &samples[start..end];
-            let (recall_sum, n, per_cat, timing) = locomo_eval(shard, k, &backend)?;
+            let (recall_sum, n, per_cat, timing, gold) = locomo_eval(shard, k, &backend)?;
             // RAW line carries the exact numerator/denominator so sharded runs
             // (convos [start,end)) sum to the full R@k without rounding drift.
             println!(
@@ -2316,6 +2563,65 @@ fn main() -> Result<()> {
                 println!(
                     "  category {cat:<12} {:.1}%  ({cnt})",
                     100.0 * sum / cnt as f32
+                );
+            }
+            // Gold-evidence recall. RAW first, with every numerator and
+            // denominator, so sharded runs sum instead of averaging averages.
+            let g = gold;
+            println!(
+                "LOCOMO_GOLD_RAW convos={start}..{end}/{total} queries={} session_any={:.4} \
+                 session_all={:.4} turn_queries={} turn_any={:.4} turn_all={:.4} \
+                 slots={} repeat_slots={} unlocatable_turns={}",
+                g.queries,
+                g.session_any,
+                g.session_all,
+                g.turn_queries,
+                g.turn_any,
+                g.turn_all,
+                g.slots,
+                g.repeat_slots,
+                g.unlocatable_turns
+            );
+            for (ci, cap) in DOC_CAPS.iter().enumerate() {
+                println!(
+                    "LOCOMO_DOCCAP_RAW convos={start}..{end}/{total} cap={cap} \
+                     turn_queries={} turn_any={:.4} turn_all={:.4}",
+                    g.turn_queries, g.dedup_turn_any[ci], g.dedup_turn_all[ci]
+                );
+            }
+            let pct = |num: f32, den: u32| 100.0 * num / den.max(1) as f32;
+            println!(
+                "Gold evidence, session granularity: any {:.1}%  all {:.1}%   ({} q)",
+                pct(g.session_any, g.queries),
+                pct(g.session_all, g.queries),
+                g.queries
+            );
+            println!(
+                "Gold evidence, turn granularity:    any {:.1}%  all {:.1}%   ({} q)",
+                pct(g.turn_any, g.turn_queries),
+                pct(g.turn_all, g.turn_queries),
+                g.turn_queries
+            );
+            for (ci, cap) in DOC_CAPS.iter().enumerate() {
+                println!(
+                    "  at most {cap} slot(s) per document:  any {:.1}%  all {:.1}%   \
+                     (all {:+.1}pp vs the same retrieval uncapped)",
+                    pct(g.dedup_turn_any[ci], g.turn_queries),
+                    pct(g.dedup_turn_all[ci], g.turn_queries),
+                    pct(g.dedup_turn_all[ci], g.turn_queries) - pct(g.turn_all, g.turn_queries)
+                );
+            }
+            println!(
+                "  slots filled by an already-represented document: {}/{} = {:.1}%",
+                g.repeat_slots,
+                g.slots,
+                pct(g.repeat_slots as f32, g.slots)
+            );
+            if g.unlocatable_turns > 0 {
+                println!(
+                    "  {} gold turns could not be located in the ingested body \
+                     and are excluded from the turn rows",
+                    g.unlocatable_turns
                 );
             }
             Ok(())
@@ -2496,10 +2802,77 @@ mod tests {
                 {"question": "adversarial with no evidence", "category": 5}
             ]
         });
-        let (recall, n, per_cat, _timing) = locomo_eval(&[sample], 5, "local").unwrap();
+        let (recall, n, per_cat, _timing, gold) = locomo_eval(&[sample], 5, "local").unwrap();
         assert_eq!(n, 1, "evidence-free QA must be skipped");
         assert_eq!(recall, 1.0, "evidence session must be retrieved");
         assert_eq!(per_cat.get("1").unwrap().1, 1);
+        // Turn granularity must actually be exercised, not silently empty:
+        // a fixture whose gold turns fail to locate would leave every turn
+        // row at zero out of zero and pass any assertion phrased on the
+        // ratio alone.
+        assert_eq!(gold.unlocatable_turns, 0, "gold turn must be locatable");
+        assert_eq!(gold.turn_queries, 1, "turn row must have a denominator");
+        assert_eq!(
+            gold.turn_all, 1.0,
+            "the gold turn itself must be in the slots"
+        );
+        assert_eq!(gold.session_all, 1.0);
+    }
+
+    #[test]
+    fn spans_merge_and_contain() {
+        assert_eq!(
+            merge_spans(vec![(0, 5), (3, 9), (20, 25)]),
+            vec![(0, 9), (20, 25)]
+        );
+        // A turn split across a chunk boundary is covered by the union of the
+        // two chunks either side, and by neither of them alone — the whole
+        // reason coverage is tested against merged intervals.
+        let left = (100usize, 200usize);
+        let right = (190usize, 300usize);
+        let turn = (180usize, 210usize);
+        assert!(!covers(&[left], turn));
+        assert!(!covers(&[right], turn));
+        assert!(covers(&merge_spans(vec![left, right]), turn));
+        // A gap in the union is a real gap.
+        assert!(!covers(&merge_spans(vec![(0, 100), (250, 400)]), turn));
+    }
+
+    #[test]
+    fn locate_chunk_walks_overlapping_windows() {
+        let body = "alpha beta gamma delta epsilon";
+        let mut cur = 0usize;
+        assert_eq!(locate_chunk(body, "alpha beta", &mut cur), vec![(0, 10)]);
+        // Windows overlap, so the next chunk starts *before* the previous one
+        // ended; the cursor must not have skipped past it.
+        assert_eq!(locate_chunk(body, "beta gamma", &mut cur), vec![(6, 16)]);
+        // The trailing-runt merge joins two non-adjacent slices with "\n\n".
+        let mut cur = 0usize;
+        let spans = locate_chunk(body, "alpha\n\nepsilon", &mut cur);
+        assert_eq!(spans, vec![(0, 5), (23, 30)]);
+    }
+
+    #[test]
+    fn cap_per_document_caps_then_refills() {
+        let mk = |room: &str, id: &str| SearchHit {
+            drawer: Drawer::new("w", room, format!("body of {id}"), None, 0, "t"),
+            score: 0.0,
+            semantic: 0.0,
+            lexical: 0.0,
+            lexical_exact: 0.0,
+            lexical_morph: 0.0,
+        };
+        let hits = vec![mk("s1", "a"), mk("s1", "b"), mk("s2", "c"), mk("s1", "d")];
+        // Two documents, four slots asked for: the cap takes one of each, then
+        // hands the remaining slots back in score order rather than returning
+        // fewer memories than asked.
+        assert_eq!(cap_per_document(&hits, 4, 1), vec![0, 1, 2, 3]);
+        // When the slots are scarce the cap binds: s1's second chunk is
+        // displaced by s2's first — the displacement gap 2 proposes, and the
+        // one the LoCoMo run measures the cost of.
+        assert_eq!(cap_per_document(&hits, 2, 1), vec![0, 2]);
+        // A cap of 2 lets s1 keep its second chunk.
+        assert_eq!(cap_per_document(&hits, 2, 2), vec![0, 1]);
     }
 
     #[test]

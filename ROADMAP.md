@@ -473,22 +473,46 @@ The ordering below is by measured cost, not by appetite.
    `kickboxing`. **Now unblocked**: the per-embedder
    `semantic_admission_gate` was the blocker, since one const retired
    the relevance gate for any real model.
-2. **Deduplicate candidates by source document.** 14% of retrieval slots
-   are consumed by repeat chunks of a document already returned — a mean
-   of 8.6 distinct sessions per 10 slots, worst cases 6. **This is not
-   `room_cap`**, which spreads across rooms and is measured −5.6pp on
-   concentrated evidence; this removes redundancy inside one document
-   and hands the slots back. Compounds with `multi-hop` (gold-recall
-   53.9%), which needs several *distinct* documents.
+2. **Deduplicate candidates by source document — MEASURED AND REFUSED
+   (2026-07-29).** The premise did not survive its own instrument. The
+   14% counted slots holding *another chunk of the same document*; it
+   never showed that chunk was redundant, and (4) below shows it is not.
+   Run through `mnemosyne-bench locomo` at `k=10` over all ten
+   conversations, against the very prompt a reader would receive:
+
+   | selection | gold turns, any | gold turns, all |
+   |---|---|---|
+   | uncapped top-k (today) | 84.3% | **74.4%** |
+   | ≤2 slots per document | 83.1% | 73.1% (−1.3pp) |
+   | ≤1 slot per document | 70.9% | 59.5% (**−14.9pp**) |
+
+   Both arms lose, and the loss shrinks monotonically as the cap
+   loosens — the shape you get when a second chunk of a document
+   carries *new* evidence rather than repeating the first. Under this
+   harness's own ingest the repeat-slot share is 21.9%, and handing
+   those slots to a fresh document costs more gold than it gains. This
+   is `room_cap`'s −5.6pp again, for the same reason its post-mortem
+   gave: document presence is not the thing, **the right chunk is**.
+   The counterfactual stays in the harness (`DOC_CAPS`) so the idea is
+   re-measured rather than re-proposed.
 3. **Wire a query-side date into search.** `SearchOptions` is
    `{morph_lang, wing, room, limit, room_cap}` — no date field. The
    temporal engine resolves dates *inside* drawers and was never
    connected to the query side, so "in September 2023" competes as a
    bare token against text saying "last week".
-4. **Gold-evidence recall as a standing bench metric.** 104 of 189
-   failures had every required document in context — more than half of
-   what we would have called a memory failure was the reader. Cheap:
-   no model calls, `gold_ids` are already in the datasets.
+4. **Gold-evidence recall as a standing bench metric — BUILT
+   (2026-07-29).** `mnemosyne-bench locomo` now reports gold recall at
+   two granularities, still with no model calls. The row it has always
+   printed — at least one gold *session* among the top-k rooms — reads
+   95.6%; the same retrieval puts **every** gold *turn* in front of the
+   reader for 74.4% of queries. Session presence overstates evidence
+   presence by ~13pp and is blind to chunk choice, which is how a
+   per-document cap can look free while removing the evidence. Coverage
+   is an interval test over byte ranges, so a turn split across a chunk
+   boundary counts as present when the chunks either side are both
+   returned. Unlocatable gold turns (9 of ~2 800) are excluded from the
+   turn rows **and printed**, so the denominator can never quietly
+   shrink.
 5. **Abstention**, which is downstream of (1): the gate can only mean
    something once the vector space has a real floor. Currently 0/12 on
    an LLM-free probe, because `lexical > 0` passes on any shared term.
@@ -496,7 +520,8 @@ The ordering below is by measured cost, not by appetite.
 **Explicitly refused, as benchmark-fitting rather than engineering:**
 raising `k`; tuning chunk size to LoCoMo; making chronological assembly
 a default because *this* corpus is temporal; conversational heuristics;
-and `room_cap` tuning.
+and `room_cap` tuning. Item 2 above now joins them, refused on its own
+measurement rather than on taste.
 
 ### 1. Inverted FDE tier (BUILT v0.39.0 — measured, shipped OPT-IN)
 
