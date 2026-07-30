@@ -1624,6 +1624,8 @@ dependencies = [
 name = "mnemosyne-llm"
 version = "0.42.0"
 dependencies = [
+ "mnemosyne-core",
+ "mnemosyne-obs",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
