@@ -1682,6 +1682,7 @@ dependencies = [
  "mnemosyne-index",
  "mnemosyne-obs",
  "mnemosyne-vault",
+ "rayon",
  "rusqlite",
  "serde",
  "serde_json",

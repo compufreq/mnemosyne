@@ -14,6 +14,7 @@ authors.workspace = true
 hnsw = ["dep:instant-distance"]
 
 [dependencies]
+rayon = { workspace = true }
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-vault = { path = "../mnemosyne-vault" }
 mnemosyne-index = { path = "../mnemosyne-index" }
