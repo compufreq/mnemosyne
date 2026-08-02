@@ -582,7 +582,10 @@ Models: `MNEMOSYNE_EMBEDDER` (`hash`|`onnx`|`ort`) ·
 
 Retrieval: `MNEMOSYNE_RETRIEVAL` (`pq`|`fde`|`hnsw`) · `MNEMOSYNE_FUSION`
 (`bm25` default |`legacy`; `rrf` removed — measured −7.3pp, warns and falls
-back to `bm25`) · `MNEMOSYNE_FTS_PREFILTER_MIN` (2048) ·
+back to `bm25`) · `MNEMOSYNE_FUSION_WEIGHT` (0.55 — the blend's semantic
+weight `w` in `w·semantic + (0.90−w)·lexical + 0.10·recency`; declared,
+clamped to 0.20–0.70 so no configuration can retire a channel, one global
+value never per-query) · `MNEMOSYNE_FTS_PREFILTER_MIN` (2048) ·
 `MNEMOSYNE_SEMANTIC_GATE` (the embedder's own calibration; a number in
 `0.0..=1.0` declares the `semantic` score above which a drawer is admitted
 on cosine evidence alone, `off` refuses semantic-only admission entirely.
