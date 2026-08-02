@@ -29,6 +29,7 @@ const WRITE_TOOLS: &[&str] = &[
     "mnemosyne_kg_add",
     "mnemosyne_kg_invalidate",
     "mnemosyne_kg_supersede",
+    "mnemosyne_kg_set_authority",
     "mnemosyne_diary_write",
     "mnemosyne_dedup",
 ];
@@ -234,6 +235,12 @@ fn tool_definitions() -> Value {
         tool("mnemosyne_kg_timeline", "Fact history, optionally for one entity.",
             json!({ "entity": s("entity") }), &[]),
         tool("mnemosyne_kg_stats", "Knowledge-graph counts.", json!({}), &[]),
+        tool("mnemosyne_lookup_canonical", "The exact-authority door: the one active, approved, canonical fact for a key. Consult BEFORE semantic recall for exact or high-risk asks — an empty answer means no declared truth exists, never a guess.",
+            json!({ "key": s("canonical key") }), &["key"]),
+        tool("mnemosyne_kg_set_authority", "Place a fact on the authority tier or take it off. authority_class stated|canonical, review_state unreviewed|approved|rejected; canonical_key required for canonical (promoting approved onto an occupied key supersedes the old holder, audited).",
+            json!({ "triple_id": s("fact id"), "authority_class": s("stated|canonical"),
+                    "review_state": s("unreviewed|approved|rejected"), "canonical_key": s("exact-lookup key") }),
+            &["triple_id", "authority_class", "review_state"]),
         // --- agent diaries ---
         tool("mnemosyne_diary_write", "Append a diary entry for an agent.",
             json!({ "agent": s("agent name"), "entry": s("diary text") }), &["agent", "entry"]),
@@ -655,6 +662,28 @@ fn call_tool(store: &mut PalaceStore, name: &str, args: &Value) -> Result<String
         "mnemosyne_kg_stats" => {
             let st = store.kg_stats()?;
             Ok(serde_json::to_string_pretty(&st)?)
+        }
+        "mnemosyne_lookup_canonical" => {
+            let key = req_str(args, "key")?;
+            match store.lookup_canonical(key)? {
+                Some(fact) => Ok(serde_json::to_string_pretty(&fact)?),
+                // Explicit prose, not an empty list: the caller must be able
+                // to tell "no declared truth" from a tool failure, and must
+                // not fall back to guessing on this key's behalf.
+                None => Ok(format!("no approved canonical fact holds key {key:?}")),
+            }
+        }
+        "mnemosyne_kg_set_authority" => {
+            store.kg_set_authority(
+                req_str(args, "triple_id")?,
+                req_str(args, "authority_class")?,
+                req_str(args, "review_state")?,
+                opt_str(args, "canonical_key"),
+            )?;
+            Ok(format!(
+                "authority set on fact {}",
+                req_str(args, "triple_id")?
+            ))
         }
         "mnemosyne_diary_write" => {
             let id = store.diary_write(req_str(args, "agent")?, req_str(args, "entry")?)?;
