@@ -613,6 +613,12 @@ a request's own `min_trust` never is; garbage warns and stays off) ·
 on cosine evidence alone, `off` refuses semantic-only admission entirely.
 Set it only if you have measured your own corpus — the default is measured
 from the embedder in hand, and an external vault refuses until you declare) ·
+`MNEMOSYNE_SEMANTIC_FLOOR` (the embedder's own — the raw cosine the vector
+space gives unrelated text, the calibration zero of the cosine→`semantic`
+map: the measured floor lands at 0.5 and 1.0 stays 1.0, so a served
+model's semantic channel keeps its full range in fusion. Hash declares 0,
+which reproduces the shipped map to the bit; declare this only for an
+external vault you have measured yourself; garbage warns and defers) ·
 `MNEMOSYNE_IVF_MIN` (8192) · `MNEMOSYNE_IVF_NPROBE` ·
 `MNEMOSYNE_WING_PQ_MIN` (4096 — wings at least this large carry their own
 PQ codebook and code rows, so a wing-scoped search probes the wing's index
