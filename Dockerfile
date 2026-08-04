@@ -30,8 +30,13 @@ COPY crates ./crates
 # pre-compiles the test targets. Set: builds only the CLI with the given
 # features so the runtime binary carries them (no test overwrite).
 ARG MNEMOSYNE_FEATURES=""
+# The features branch must still produce the orchestrator (the runtime
+# stage copies BOTH binaries — a features-only build used to leave it
+# missing, which only never fired because feature images stopped at the
+# builder stage until the :ort runtime variant existed).
 RUN if [ -n "$MNEMOSYNE_FEATURES" ]; then \
-        cargo build --release -p mnemosyne-cli --features "$MNEMOSYNE_FEATURES"; \
+        cargo build --release -p mnemosyne-cli --features "$MNEMOSYNE_FEATURES" \
+        && cargo build --release -p mnemosyne-orchestrator; \
     else \
         cargo build --release && cargo test --release --no-run; \
     fi
