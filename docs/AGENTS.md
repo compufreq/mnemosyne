@@ -244,7 +244,13 @@ Everything composes through environment variables; identity is recorded
 per vault on first write, and a model swap is refused unless you set
 `MNEMOSYNE_FORCE_EMBEDDER=1` and re-embed with `mnemosyne repair`.
 
-**Embedder tiers** (`MNEMOSYNE_EMBEDDER`):
+**Embedder tiers** (`MNEMOSYNE_EMBEDDER`; the full posture guide with
+setup recipes, the model-export procedure, and the security trades is
+[docs/EMBEDDERS.md](EMBEDDERS.md) — published as the "Choosing an
+embedder posture" chapter. Since the posture-configs unit, releases ship
+the `ort` posture ready-made: a `…-x86_64-unknown-linux-gnu-ort.tar.gz`
+binary asset and a `ghcr.io/compufreq/mnemosyne:<tag>-ort` image, both
+smoke-probed for the compiled feature at build):
 
 | Value | What | When |
 |---|---|---|
