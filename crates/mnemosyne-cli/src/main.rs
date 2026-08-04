@@ -1077,9 +1077,21 @@ fn embedder_factory() -> tenant::EmbedderFactory {
                          (cargo build -p mnemosyne-cli --features ort)"
                     )
                 }
+                // A model served over HTTP. The CLI resolver has always had
+                // this arm; the server's had not, so `MNEMOSYNE_EMBEDDER=http`
+                // worked for `remember` and answered 500 on every `/v1` write
+                // — the served posture unreachable from the surface teams
+                // actually deploy, with the TLS terminator and CA pin shipped
+                // for it. Found by driving the engine as AMB's provider.
+                Ok("http") => {
+                    let embedder = mnemosyne_llm::HttpEmbedder::from_env().map_err(|e| {
+                        anyhow::anyhow!("connecting to the embeddings endpoint: {e}")
+                    })?;
+                    Ok(Box::new(embedder))
+                }
                 Ok("hash") | Ok("") | Err(_) => Ok(Box::new(mnemosyne_core::HashEmbedder)),
                 Ok(other) => {
-                    bail!("unknown MNEMOSYNE_EMBEDDER {other:?} (expected: hash, onnx, ort)")
+                    bail!("unknown MNEMOSYNE_EMBEDDER {other:?} (expected: hash, http, onnx, ort)")
                 }
             }
         },
