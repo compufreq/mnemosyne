@@ -285,7 +285,10 @@ mnemosyne vault rotate <name>        # fresh derived keys; re-seals everything, 
 mnemosyne remember <text> [--vault --wing --room]
 mnemosyne mine <dir> [--mode files|convos]  # documents, or Claude Code/Codex JSONL sessions
 mnemosyne sweep <dir>                # one verbatim drawer per transcript message (idempotent)
-mnemosyne search <query> [--vault --wing --room -n N]
+mnemosyne search <query> [--vault --wing --room --kind --min-trust -n N]
+mnemosyne search <query> --language de   # declared morphology (en de nl it es fr pt tr ru el hi ka ko)
+mnemosyne search <query> --offset N --ranked-at <rfc3339>  # page one ranking, clock pinned
+mnemosyne search <query> --room-cap N    # spread hits across rooms, not the most verbose one
 mnemosyne wake-up [--vault --wing]   # L0 identity + L1 essential story
 mnemosyne drawer get|list|update|delete|delete-by-source|check-dup
 mnemosyne kg add|query|rel|invalidate|supersede|timeline|stats
