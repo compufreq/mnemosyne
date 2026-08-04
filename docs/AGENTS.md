@@ -686,8 +686,15 @@ Server: `MNEMOSYNE_MCP_HTTP_TOKEN` (bearer; mandatory non-loopback) ·
 `MNEMOSYNE_ASSERTION_SECRET` (enables per-vault assertions) ·
 `MNEMOSYNE_METRICS=1` (+ bearer) · `MNEMOSYNE_SAMPLE_INTERVAL_MS` (2000).
 
-LLM (optional, for `refine`): `MNEMOSYNE_LLM_URL` · `MNEMOSYNE_LLM_MODEL`
+LLM (optional, for `refine` and the admission advisor):
+`MNEMOSYNE_LLM_URL` (**TLS or loopback only** — cleartext http to a
+non-loopback host refuses at construction, no override: refine sends
+drawer text verbatim and the advisor sends candidates, and that content
+must never cross a readable wire) · `MNEMOSYNE_LLM_MODEL`
 (`llama3.2`) · `MNEMOSYNE_LLM_API` (`ollama`|`openai`) ·
+`MNEMOSYNE_LLM_CA` (PEM whose certificates become the ONLY trust roots
+for the LLM connection — the `MNEMOSYNE_EMBED_CA` pin one client over;
+garbage refuses, never falls back) ·
 `MNEMOSYNE_LLM_KEY` (bearer credential; **unset by default** — local
 runtimes take none, and an empty key sends no header at all. Set it only
 to reach a runtime behind an authenticating gateway, which unlike the
