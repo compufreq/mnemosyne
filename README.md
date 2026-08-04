@@ -299,6 +299,11 @@ mnemosyne dedup [--apply]            # exact-duplicate detection (keyed fingerpr
 mnemosyne backup create|list|restore # verified snapshots, keeps last 10
 mnemosyne repair                     # backfill + vacuum + re-verify
 mnemosyne verify [--vault]           # HMAC every record + replay audit chain
+mnemosyne admission list|allow|deny  # review writes the ingest screen quarantined
+mnemosyne trust set|list <wing>      # deployment-assigned wing trust (candidate floor)
+mnemosyne retention set|list|clear|sweep  # per wing/room max age; sweep is explicit
+mnemosyne forget <id...> [--sign]    # destroy + chain-attested receipt (RTBF)
+mnemosyne verify-forgetting <receipt># replay a receipt against this vault
 mnemosyne export [--vault]           # decrypted JSONL to stdout
 mnemosyne export --to <pub> --out f  # sealed bundle only that recipient can open
 mnemosyne import <file.jsonl>        # migrate from mnemosyne or mempalace exports
