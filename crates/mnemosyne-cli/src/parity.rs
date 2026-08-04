@@ -1,3 +1,4 @@
+#![allow(dead_code)] // the inventory below is documentation its own tests consume
 //! Surface parity — the inventory that fails when a surface drifts.
 //!
 //! A 14-agent audit once found **65 confirmed drifts** between the CLI, the
@@ -19,62 +20,49 @@
 //! What this deliberately does NOT assert: that every capability exists on
 //! every surface. Some absences are boundaries, not drift — admission review
 //! and wing-trust assignment are operator-only and must NEVER reach MCP, the
-//! agent surface. Those are recorded as `Operator` and the test requires them
+//! agent surface. Those are recorded in `OPERATOR_ONLY` and the test requires them
 //! to be absent from MCP, so the boundary is enforced by the same mechanism
 //! that enforces the parity.
 
-/// Where a capability is reachable from. The point of the type is that a
-/// new capability cannot be added without answering the question.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
-    /// Reachable from every surface that could sensibly host it.
-    Everywhere,
-    /// Operator-only: CLI and `/v1`, and **never** MCP. Reaching one of
-    /// these from MCP is a security-boundary violation, not a convenience.
-    Operator,
-    /// Deliberately one-surface, with the reason recorded beside it.
-    Scoped(&'static str),
-}
-
 /// The MCP tool inventory. Every tool the server advertises must appear
 /// here exactly once, and every entry must name a real tool.
-pub const MCP_TOOLS: &[(&str, Reach)] = &[
+pub const MCP_TOOLS: &[&str] = &[
     // Memory: the agent surface proper.
-    ("mnemosyne_save", Reach::Everywhere),
-    ("mnemosyne_add_drawer", Reach::Everywhere),
-    ("mnemosyne_update_drawer", Reach::Everywhere),
-    ("mnemosyne_delete_drawer", Reach::Everywhere),
-    ("mnemosyne_delete_by_source", Reach::Everywhere),
-    ("mnemosyne_search", Reach::Everywhere),
-    ("mnemosyne_get_drawer", Reach::Everywhere),
-    ("mnemosyne_list_drawers", Reach::Everywhere),
-    ("mnemosyne_wake_up", Reach::Everywhere),
-    ("mnemosyne_check_duplicate", Reach::Everywhere),
-    ("mnemosyne_dedup", Reach::Everywhere),
-    ("mnemosyne_list_wings", Reach::Everywhere),
-    ("mnemosyne_list_rooms", Reach::Everywhere),
-    ("mnemosyne_get_taxonomy", Reach::Everywhere),
-    ("mnemosyne_get_closet_index", Reach::Everywhere),
-    ("mnemosyne_list_agents", Reach::Everywhere),
-    ("mnemosyne_diary_write", Reach::Everywhere),
-    ("mnemosyne_diary_read", Reach::Everywhere),
-    ("mnemosyne_create_tunnel", Reach::Everywhere),
-    ("mnemosyne_list_tunnels", Reach::Everywhere),
-    ("mnemosyne_delete_tunnel", Reach::Everywhere),
-    ("mnemosyne_list_hallways", Reach::Everywhere),
-    ("mnemosyne_follow_tunnel", Reach::Everywhere),
-    ("mnemosyne_traverse", Reach::Everywhere),
-    ("mnemosyne_status", Reach::Everywhere),
-    ("mnemosyne_verify", Reach::Everywhere),
+    "mnemosyne_save",
+    "mnemosyne_add_drawer",
+    "mnemosyne_update_drawer",
+    "mnemosyne_delete_drawer",
+    "mnemosyne_delete_by_source",
+    "mnemosyne_search",
+    "mnemosyne_get_drawer",
+    "mnemosyne_list_drawers",
+    "mnemosyne_wake_up",
+    "mnemosyne_check_duplicate",
+    "mnemosyne_dedup",
+    "mnemosyne_list_wings",
+    "mnemosyne_list_rooms",
+    "mnemosyne_get_taxonomy",
+    "mnemosyne_get_closet_index",
+    "mnemosyne_list_agents",
+    "mnemosyne_diary_write",
+    "mnemosyne_diary_read",
+    "mnemosyne_create_tunnel",
+    "mnemosyne_list_tunnels",
+    "mnemosyne_delete_tunnel",
+    "mnemosyne_list_hallways",
+    "mnemosyne_follow_tunnel",
+    "mnemosyne_traverse",
+    "mnemosyne_status",
+    "mnemosyne_verify",
     // Knowledge graph.
-    ("mnemosyne_kg_add", Reach::Everywhere),
-    ("mnemosyne_kg_query", Reach::Everywhere),
-    ("mnemosyne_kg_timeline", Reach::Everywhere),
-    ("mnemosyne_kg_invalidate", Reach::Everywhere),
-    ("mnemosyne_kg_supersede", Reach::Everywhere),
-    ("mnemosyne_kg_stats", Reach::Everywhere),
-    ("mnemosyne_kg_set_authority", Reach::Everywhere),
-    ("mnemosyne_lookup_canonical", Reach::Everywhere),
+    "mnemosyne_kg_add",
+    "mnemosyne_kg_query",
+    "mnemosyne_kg_timeline",
+    "mnemosyne_kg_invalidate",
+    "mnemosyne_kg_supersede",
+    "mnemosyne_kg_stats",
+    "mnemosyne_kg_set_authority",
+    "mnemosyne_lookup_canonical",
 ];
 
 /// Capabilities that must NEVER appear on MCP. Not an oversight to be
@@ -117,8 +105,7 @@ mod tests {
             "found no tool definitions — the extraction, not the surface, is broken"
         );
 
-        let inventoried: std::collections::BTreeSet<&str> =
-            MCP_TOOLS.iter().map(|(n, _)| *n).collect();
+        let inventoried: std::collections::BTreeSet<&str> = MCP_TOOLS.iter().copied().collect();
         assert_eq!(
             MCP_TOOLS.len(),
             inventoried.len(),
@@ -130,7 +117,7 @@ mod tests {
         assert!(
             missing.is_empty(),
             "these MCP tools are not in the parity inventory — add them with a \
-             Reach, deciding whether every surface should host them: {missing:?}"
+             line, deciding whether every surface should host them: {missing:?}"
         );
         assert!(
             stale.is_empty(),
@@ -169,7 +156,7 @@ mod tests {
             &src[start..end]
         };
         // A tool whose name says it changes something must be refused.
-        for (name, _) in MCP_TOOLS {
+        for name in MCP_TOOLS {
             let mutating = ["_save", "_add", "_update", "_delete", "_create", "_write"]
                 .iter()
                 .any(|v| name.contains(v))
