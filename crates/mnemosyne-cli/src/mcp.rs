@@ -29,7 +29,6 @@ const WRITE_TOOLS: &[&str] = &[
     "mnemosyne_kg_add",
     "mnemosyne_kg_invalidate",
     "mnemosyne_kg_supersede",
-    "mnemosyne_kg_set_authority",
     "mnemosyne_diary_write",
     "mnemosyne_dedup",
 ];
