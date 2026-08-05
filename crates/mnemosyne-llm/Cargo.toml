@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+mnemosyne-net = { path = "../mnemosyne-net" }
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-obs = { path = "../mnemosyne-obs" }
 serde = { workspace = true }
