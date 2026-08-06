@@ -343,7 +343,7 @@ mnemosyne bundle sign-keygen|sender  # Ed25519 sender-attestation identities (ex
 mnemosyne transcript render <f.jsonl># pretty-print an agent transcript
 mnemosyne daemon run [--watch --interval --once]  # background auto-save loop
 mnemosyne hooks claude-code          # auto-save hook settings snippet
-mnemosyne serve-mcp [--vault]        # MCP stdio server (33 tools)
+mnemosyne serve-mcp [--vault]        # MCP stdio server (34 tools)
 mnemosyne serve-http [--host --port --read-only]  # MCP /mcp + multi-tenant REST /v1
                                      # --read-only is a posture on the whole
                                      # process: both stores open read-only and
