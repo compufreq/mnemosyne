@@ -8,12 +8,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+mnemosyne-net = { path = "../mnemosyne-net" }
 mnemosyne-core = { path = "../mnemosyne-core" }
 mnemosyne-obs = { path = "../mnemosyne-obs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { version = "2.10", features = ["json"] }
+url = { workspace = true }
 # The exact rustls ureq's `tls` feature compiles (ring provider, no
 # aws-lc) — needed only to build the declared-CA `ClientConfig` for
 # MNEMOSYNE_EMBED_CA. Version and features must stay unified with ureq's
